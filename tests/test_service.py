@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from backend.service import (
+from hikresetpasswd.service import (
     ResetKeyResult,
     generate_key_offline,
     process_qr_content,
@@ -75,7 +75,7 @@ class TestProcessQRContent:
     @pytest.mark.asyncio
     async def test_processes_url(self):
         url = "https://hikvision.com/reset?token=test123"
-        with patch("backend.service.httpx.AsyncClient") as mock_client_class:
+        with patch("hikresetpasswd.service.httpx.AsyncClient") as mock_client_class:
             mock_response = MagicMock()
             mock_response.text = '{"key": "TESTKEY1"}'
             mock_response.raise_for_status = MagicMock()
@@ -93,7 +93,7 @@ class TestProcessQRContent:
     async def test_url_network_error(self):
         import httpx
         url = "https://hikvision.com/reset?token=test123"
-        with patch("backend.service.httpx.AsyncClient") as mock_client_class:
+        with patch("hikresetpasswd.service.httpx.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
             mock_client.get = AsyncMock(
                 side_effect=httpx.RequestError("Connection failed")
@@ -160,7 +160,7 @@ class TestSSRFProtection:
     async def test_hikvision_domain_allowed(self):
         """Hikvision domain URLs should be fetched."""
         url = "https://hikvision.com/reset?token=test123"
-        with patch("backend.service.httpx.AsyncClient") as mock_client_class:
+        with patch("hikresetpasswd.service.httpx.AsyncClient") as mock_client_class:
             mock_response = MagicMock()
             mock_response.text = '{"key": "SECUREKEY"}'
             mock_response.raise_for_status = MagicMock()
@@ -186,7 +186,7 @@ class TestSSRFProtection:
     async def test_subdomain_of_hikvision_allowed(self):
         """Legitimate subdomains of Hikvision domains should be allowed."""
         url = "https://service.hikvision.com/reset?token=abc"
-        with patch("backend.service.httpx.AsyncClient") as mock_client_class:
+        with patch("hikresetpasswd.service.httpx.AsyncClient") as mock_client_class:
             mock_response = MagicMock()
             mock_response.text = '{"key": "SUBKEY123"}'
             mock_response.raise_for_status = MagicMock()

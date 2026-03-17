@@ -1,9 +1,9 @@
 [project]
-name = "backend"
-version = "0.1.0"
-description = ""
+name = "hikresetpasswd"
+version = "1.0.0"
+description = "海康威视摄像头密码重置工具 / Hikvision Camera Password Reset Tool"
 authors = [
-    {name = "copilot-swe-agent[bot]",email = "198982749+Copilot@users.noreply.github.com"}
+    {name = "doubletry"}
 ]
 readme = "README.md"
 requires-python = "^3.12"
@@ -14,11 +14,12 @@ dependencies = [
     "pillow (>=12.1.1,<13.0.0)",
     "opencv-python-headless (>=4.13.0.92,<5.0.0.0)",
     "pyzbar (>=0.1.9,<0.2.0)",
-    "httpx (>=0.28.1,<0.29.0)"
+    "httpx (>=0.28.1,<0.29.0)",
+    "python-dotenv (>=1.0.0,<2.0.0)"
 ]
 
 [tool.poetry]
-packages = [{include = "backend", from = "src"}]
+packages = [{include = "hikresetpasswd", from = "src"}]
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

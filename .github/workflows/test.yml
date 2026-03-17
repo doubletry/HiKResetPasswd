@@ -1,0 +1,107 @@
+# =============================================================================
+# 自动化测试工作流
+# Automated Test Workflow
+#
+# 触发条件 / Triggers:
+#   - 向 main 分支提交 pull_request 时
+#     When a pull_request targets the main branch
+#   - 向 main 分支直接推送时（如合并）
+#     When pushing directly to main (e.g. merge)
+# =============================================================================
+
+name: Tests
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Python 后端测试 / Python backend tests
+  # ---------------------------------------------------------------------------
+  backend-tests:
+    name: Backend Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        python-version: [ "3.12" ]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 安装 libzbar 系统依赖（QR 码解码需要）
+      # Install libzbar system dependency (required for QR code decoding)
+      - name: Install system dependencies (libzbar)
+        run: sudo apt-get update && sudo apt-get install -y libzbar0
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # 安装 Poetry / Install Poetry
+      - name: Install Poetry
+        run: pip install poetry
+
+      # 缓存 Poetry 虚拟环境 / Cache Poetry virtualenv
+      - name: Cache Poetry virtualenv
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pypoetry/virtualenvs
+          key: ${{ runner.os }}-poetry-${{ hashFiles('poetry.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-poetry-
+
+      # 安装 Python 依赖（含开发依赖）/ Install Python deps (including dev)
+      - name: Install dependencies
+        run: poetry install --no-interaction
+
+      # 运行所有测试并生成覆盖率报告
+      # Run all tests and generate coverage report
+      - name: Run tests with coverage
+        run: poetry run pytest tests/ -v --cov=src --cov-report=xml --cov-report=term-missing
+
+      # 上传覆盖率报告（可选，便于后续集成 Codecov 等）
+      # Upload coverage report (optional, for Codecov integration etc.)
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+  # ---------------------------------------------------------------------------
+  # 前端类型检查 / Frontend type check
+  # ---------------------------------------------------------------------------
+  frontend-typecheck:
+    name: Frontend Type Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # 运行 Vue TypeScript 类型检查 / Run Vue TypeScript type check
+      - name: TypeScript type check
+        working-directory: frontend
+        run: npm run type-check
+
+      # 构建前端（验证无编译错误）/ Build frontend (verify no build errors)
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build-only

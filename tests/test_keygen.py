@@ -3,7 +3,7 @@
 import pytest
 from datetime import date
 
-from backend.keygen import generate_key_v1, generate_key_from_serial_date
+from hikresetpasswd.keygen import generate_key_v1, generate_key_from_serial_date
 
 
 class TestGenerateKeyV1:

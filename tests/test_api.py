@@ -7,7 +7,7 @@ from httpx import ASGITransport, AsyncClient
 from PIL import Image
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from backend.main import app
+from hikresetpasswd.main import app
 
 
 @pytest.fixture

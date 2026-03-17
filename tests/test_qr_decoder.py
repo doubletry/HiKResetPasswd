@@ -5,7 +5,7 @@ import pytest
 import qrcode
 from PIL import Image
 
-from backend.qr_decoder import decode_qr_from_bytes, QRCodeDecodeError
+from hikresetpasswd.qr_decoder import decode_qr_from_bytes, QRCodeDecodeError
 
 
 def make_qr_image_bytes(content: str, image_format: str = "PNG") -> bytes:
