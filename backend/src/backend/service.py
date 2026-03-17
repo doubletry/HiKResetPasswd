@@ -166,16 +166,35 @@ async def _process_url(url: str) -> ResetKeyResult:
     Fetch a URL from the QR code and attempt to extract the reset key.
 
     This handles cases where the QR code contains a URL to Hikvision's service.
+    Only URLs belonging to known Hikvision domains are fetched to prevent SSRF.
     """
-    # Validate that it's a Hikvision-related URL for security
+    # Validate that it's a Hikvision-related URL for security (prevent SSRF)
     parsed = urlparse(url)
     hostname = parsed.hostname or ""
 
-    is_hikvision = any(domain in hostname for domain in HIKVISION_DOMAINS)
+    # Only allow HTTPS to known Hikvision domains
+    if parsed.scheme not in ("http", "https"):
+        return ResetKeyResult(
+            qr_content=url,
+            method="url_fetch",
+            error=f"URL scheme '{parsed.scheme}' is not allowed. Only http/https is supported.",
+        )
+
+    is_hikvision = any(
+        hostname == domain or hostname.endswith(f".{domain}")
+        for domain in HIKVISION_DOMAINS
+    )
 
     if not is_hikvision:
-        # Still try to fetch it if user configured it, but warn
-        logger.warning("URL %s is not a known Hikvision domain", hostname)
+        return ResetKeyResult(
+            qr_content=url,
+            method="url_fetch",
+            error=(
+                f"URL hostname '{hostname}' is not a known Hikvision domain. "
+                f"Allowed domains: {', '.join(HIKVISION_DOMAINS)}. "
+                "Only Hikvision service URLs from QR codes are supported."
+            ),
+        )
 
     try:
         async with httpx.AsyncClient(

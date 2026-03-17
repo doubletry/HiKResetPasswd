@@ -127,3 +127,74 @@ class TestGenerateKeyOffline:
         result = await generate_key_offline("DS-2CD2T45G0P-I", "2024-03-15")
         assert result.key is not None
         assert len(result.key) == 8
+
+
+class TestSSRFProtection:
+    @pytest.mark.asyncio
+    async def test_non_hikvision_url_blocked(self):
+        """Non-Hikvision URLs should be blocked to prevent SSRF."""
+        url = "https://evil.com/steal?data=something"
+        result = await process_qr_content(url)
+        assert result.key is None
+        assert result.error is not None
+        assert "not a known Hikvision domain" in result.error
+
+    @pytest.mark.asyncio
+    async def test_internal_ip_url_blocked(self):
+        """Internal IP addresses should be blocked."""
+        url = "http://192.168.1.1/admin"
+        result = await process_qr_content(url)
+        assert result.key is None
+        assert result.error is not None
+        assert "not a known Hikvision domain" in result.error
+
+    @pytest.mark.asyncio
+    async def test_file_scheme_blocked(self):
+        """File scheme URLs should be blocked."""
+        url = "file:///etc/passwd"
+        result = await process_qr_content(url)
+        assert result.key is None
+        assert result.error is not None
+
+    @pytest.mark.asyncio
+    async def test_hikvision_domain_allowed(self):
+        """Hikvision domain URLs should be fetched."""
+        url = "https://hikvision.com/reset?token=test123"
+        with patch("backend.service.httpx.AsyncClient") as mock_client_class:
+            mock_response = MagicMock()
+            mock_response.text = '{"key": "SECUREKEY"}'
+            mock_response.raise_for_status = MagicMock()
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_class.return_value = mock_client
+
+            result = await process_qr_content(url)
+            assert result.key == "SECUREKEY"
+
+    @pytest.mark.asyncio
+    async def test_domain_bypass_blocked(self):
+        """Domain bypass attempt like evil.hikvision.com.attacker.com should be blocked."""
+        url = "https://evil.hikvision.com.attacker.com/steal"
+        result = await process_qr_content(url)
+        assert result.key is None
+        assert result.error is not None
+        assert "not a known Hikvision domain" in result.error
+
+    @pytest.mark.asyncio
+    async def test_subdomain_of_hikvision_allowed(self):
+        """Legitimate subdomains of Hikvision domains should be allowed."""
+        url = "https://service.hikvision.com/reset?token=abc"
+        with patch("backend.service.httpx.AsyncClient") as mock_client_class:
+            mock_response = MagicMock()
+            mock_response.text = '{"key": "SUBKEY123"}'
+            mock_response.raise_for_status = MagicMock()
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_class.return_value = mock_client
+
+            result = await process_qr_content(url)
+            assert result.key == "SUBKEY123"
