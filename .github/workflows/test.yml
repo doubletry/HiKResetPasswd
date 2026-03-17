@@ -24,6 +24,9 @@ jobs:
   backend-tests:
     name: Backend Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    # 最小权限原则 / Principle of least privilege
+    permissions:
+      contents: read
 
     strategy:
       matrix:
@@ -80,6 +83,9 @@ jobs:
   frontend-typecheck:
     name: Frontend Type Check
     runs-on: ubuntu-latest
+    # 最小权限原则 / Principle of least privilege
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout repository
