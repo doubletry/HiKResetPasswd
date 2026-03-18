@@ -79,17 +79,9 @@ check_deps() {
         log_info "Node.js: $(node --version)"
     fi
 
-    # 检查 libzbar 系统库 / Check libzbar system library
-    if ! python3 -c "from pyzbar import pyzbar" &>/dev/null 2>&1; then
-        log_warn "pyzbar not importable. Trying to install libzbar..."
-        if command -v apt-get &>/dev/null; then
-            sudo apt-get install -y libzbar0 || log_warn "Could not install libzbar0 automatically"
-        elif command -v brew &>/dev/null; then
-            brew install zbar || log_warn "Could not install zbar automatically"
-        else
-            log_error "Please install zbar manually: https://github.com/mchehab/zbar"
-        fi
-    fi
+    # QR 码解码已迁移至纯 OpenCV（opencv-python-headless Python 包）
+    # 无需系统级 libzbar 库 / No system-level libzbar required
+    # (pyzbar dependency removed — pure OpenCV used for QR decoding)
 }
 
 # ---------------------------------------------------------------------------
@@ -190,7 +182,16 @@ case "$MODE" in
         log_section "Starting in Development Mode"
         start_backend &
         PIDS+=($!)
-        sleep 1  # 等待后端启动 / Wait for backend to start
+        # 等待后端健康检查通过（最多 30 秒）
+        # Wait for backend health check to pass (up to 30 seconds)
+        log_info "Waiting for backend to become ready..."
+        for i in $(seq 1 30); do
+            if curl -sf "http://${HOST}:${PORT}/api/health" >/dev/null 2>&1; then
+                log_info "Backend is ready."
+                break
+            fi
+            sleep 1
+        done
         start_frontend
         wait
         ;;
