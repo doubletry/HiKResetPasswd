@@ -14,6 +14,7 @@ class TestSettings:
         with patch.dict(os.environ, {}, clear=True):
             # Re-import to pick up clean env
             import importlib
+
             import hikresetpasswd.config as cfg
             importlib.reload(cfg)
             assert cfg.Settings.host == "0.0.0.0"
@@ -22,6 +23,7 @@ class TestSettings:
         """默认端口应为 8000 / Default port should be 8000."""
         with patch.dict(os.environ, {}, clear=True):
             import importlib
+
             import hikresetpasswd.config as cfg
             importlib.reload(cfg)
             assert cfg.Settings.port == 8000
@@ -30,6 +32,7 @@ class TestSettings:
         """从环境变量读取自定义主机 / Read custom host from env var."""
         with patch.dict(os.environ, {"HOST": "127.0.0.1"}):
             import importlib
+
             import hikresetpasswd.config as cfg
             importlib.reload(cfg)
             assert cfg.Settings.host == "127.0.0.1"
@@ -38,6 +41,7 @@ class TestSettings:
         """从环境变量读取自定义端口 / Read custom port from env var."""
         with patch.dict(os.environ, {"PORT": "9000"}):
             import importlib
+
             import hikresetpasswd.config as cfg
             importlib.reload(cfg)
             assert cfg.Settings.port == 9000
@@ -46,6 +50,7 @@ class TestSettings:
         """多个 CORS 来源应被正确拆分 / Multiple CORS origins should be split correctly."""
         with patch.dict(os.environ, {"ALLOWED_ORIGINS": "http://a.com,http://b.com"}):
             import importlib
+
             import hikresetpasswd.config as cfg
             importlib.reload(cfg)
             assert "http://a.com" in cfg.Settings.allowed_origins
@@ -56,6 +61,7 @@ class TestSettings:
         """默认日志级别应为 info / Default log level should be info."""
         with patch.dict(os.environ, {}, clear=True):
             import importlib
+
             import hikresetpasswd.config as cfg
             importlib.reload(cfg)
             assert cfg.Settings.log_level == "info"
@@ -64,6 +70,7 @@ class TestSettings:
         """从环境变量读取日志级别 / Read log level from env var."""
         with patch.dict(os.environ, {"LOG_LEVEL": "DEBUG"}):
             import importlib
+
             import hikresetpasswd.config as cfg
             importlib.reload(cfg)
             assert cfg.Settings.log_level == "debug"

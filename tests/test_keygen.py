@@ -1,9 +1,10 @@
 """Tests for the key generator module."""
 
-import pytest
 from datetime import date
 
-from hikresetpasswd.keygen import generate_key_v1, generate_key_from_serial_date
+import pytest
+
+from hikresetpasswd.keygen import generate_key_from_serial_date, generate_key_v1
 
 
 class TestGenerateKeyV1:

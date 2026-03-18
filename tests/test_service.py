@@ -1,14 +1,14 @@
 """Tests for the service module."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from hikresetpasswd.service import (
-    ResetKeyResult,
+    _extract_key_from_response,
+    _looks_like_device_data,
     generate_key_offline,
     process_qr_content,
-    _looks_like_device_data,
-    _extract_key_from_response,
 )
 
 

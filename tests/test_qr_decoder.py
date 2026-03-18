@@ -1,11 +1,12 @@
 """Tests for the QR code decoder module."""
 
 import io
+
 import pytest
 import qrcode
 from PIL import Image
 
-from hikresetpasswd.qr_decoder import decode_qr_from_bytes, QRCodeDecodeError
+from hikresetpasswd.qr_decoder import QRCodeDecodeError, decode_qr_from_bytes
 
 
 def make_qr_image_bytes(content: str, image_format: str = "PNG") -> bytes:

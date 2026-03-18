@@ -1,0 +1,90 @@
+# =============================================================================
+# 代码检查工作流
+# Code Checks Workflow
+#
+# 此工作流在所有测试之前运行，用于检查代码风格和类型。
+# 在 Review 之前，所有 check 项必须通过。
+#
+# This workflow runs BEFORE tests and checks code style and types.
+# All checks MUST pass before a review is requested.
+#
+# 触发条件 / Triggers:
+#   - 向 main 分支提交 pull_request 时
+#   - 向 main 分支直接推送时
+# =============================================================================
+
+name: Checks
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Python 代码风格检查（ruff）/ Python code style (ruff)
+  # ---------------------------------------------------------------------------
+  python-lint:
+    name: Python Lint (ruff)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Poetry
+        run: pip install poetry
+
+      # 缓存 Poetry 虚拟环境 / Cache Poetry virtualenv
+      - name: Cache Poetry virtualenv
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pypoetry/virtualenvs
+          key: ${{ runner.os }}-poetry-${{ hashFiles('poetry.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-poetry-
+
+      - name: Install dependencies (dev group)
+        run: poetry install --no-interaction
+
+      # 运行 ruff — 检查代码风格和导入排序
+      # Run ruff — check code style and import ordering
+      - name: ruff check
+        run: poetry run ruff check src/ tests/
+
+  # ---------------------------------------------------------------------------
+  # 前端 ESLint + Oxlint 检查 / Frontend ESLint + Oxlint check
+  # ---------------------------------------------------------------------------
+  frontend-lint:
+    name: Frontend Lint (ESLint + Oxlint)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # 运行 ESLint + Oxlint / Run ESLint + Oxlint
+      - name: Lint frontend
+        working-directory: frontend
+        run: npm run lint

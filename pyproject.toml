@@ -6,7 +6,7 @@ authors = [
     {name = "doubletry"}
 ]
 readme = "README.md"
-requires-python = "^3.12"
+requires-python = ">=3.12"
 dependencies = [
     "fastapi (>=0.135.1,<0.136.0)",
     "uvicorn[standard] (>=0.42.0,<0.43.0)",
@@ -30,7 +30,8 @@ dev = [
     "pytest-asyncio (>=1.3.0,<2.0.0)",
     "httpx (>=0.28.1,<0.29.0)",
     "pytest-cov (>=7.0.0,<8.0.0)",
-    "qrcode[pil] (>=8.2,<9.0)"
+    "qrcode[pil] (>=8.2,<9.0)",
+    "ruff (>=0.15.6,<0.16.0)"
 ]
 
 [tool.pytest.ini_options]
@@ -40,3 +41,15 @@ testpaths = ["tests"]
 [tool.coverage.run]
 source = ["src"]
 omit = ["tests/*"]
+
+[tool.ruff]
+# 与项目要求一致 / Consistent with project Python version
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+# E/W: pycodestyle, F: pyflakes, I: isort
+select = ["E", "W", "F", "I"]
+ignore = [
+    "E501",  # Line too long — handled by formatter
+]

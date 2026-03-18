@@ -1,11 +1,11 @@
 """Tests for the FastAPI endpoints."""
 
 import io
+
 import pytest
 import qrcode
 from httpx import ASGITransport, AsyncClient
 from PIL import Image
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from hikresetpasswd.main import app
 

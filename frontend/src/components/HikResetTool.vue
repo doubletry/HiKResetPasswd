@@ -12,6 +12,64 @@
       </button>
     </div>
 
+    <!-- Screen Capture Tab -->
+    <div v-if="activeTab === 'capture'" class="tab-content card">
+      <h2>🖥️ 屏幕截图 / Screen Capture</h2>
+      <p class="description">
+        直接截取屏幕上的二维码，无需外部截图工具。点击下方按钮，选择需要截图的窗口（如 SADP），
+        即可自动捕获二维码。<br />
+        Capture the QR code directly from any window (e.g. SADP) — no external screenshot tool needed.
+      </p>
+
+      <!-- Preview of captured frame -->
+      <div
+        class="capture-preview"
+        :class="{ empty: !capturePreviewUrl }"
+      >
+        <img
+          v-if="capturePreviewUrl"
+          :src="capturePreviewUrl"
+          alt="Captured screen"
+          class="preview-image"
+        />
+        <div v-else class="capture-placeholder">
+          <div class="capture-icon">🖥️</div>
+          <p>点击"开始截图"选择要截取的窗口</p>
+          <p class="hint">浏览器将请求屏幕捕获权限</p>
+        </div>
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="actions">
+        <button
+          class="btn btn-capture"
+          :disabled="isCaptureLoading"
+          @click="startScreenCapture"
+        >
+          <span v-if="isCaptureLoading" class="spinner">⟳</span>
+          <span v-else>📸 开始截图</span>
+        </button>
+        <button
+          v-if="capturePreviewUrl"
+          class="btn btn-primary"
+          :disabled="!captureFile || isLoading"
+          @click="uploadCapturedImage"
+        >
+          <span v-if="isLoading" class="spinner">⟳</span>
+          <span v-else>🔍 解码并获取密钥</span>
+        </button>
+        <button v-if="capturePreviewUrl" class="btn btn-secondary" @click="clearCapture">
+          🗑️ 清除
+        </button>
+      </div>
+
+      <!-- Browser support note -->
+      <p class="hint" style="margin-top: 12px">
+        💡 需要支持 <code>getDisplayMedia</code> 的现代浏览器（Chrome / Edge / Firefox）
+        并在 HTTPS 或 localhost 下运行。
+      </p>
+    </div>
+
     <!-- QR Code Upload Tab -->
     <div v-if="activeTab === 'qr'" class="tab-content card">
       <h2>📷 上传二维码截图</h2>
@@ -195,8 +253,10 @@
       <ol>
         <li>在 SADP 工具中找到需要重置密码的摄像头</li>
         <li>点击"忘记密码"，选择"二维码方式"</li>
-        <li>截图保存二维码图片</li>
-        <li>上传截图到本工具（或直接 Ctrl+V 粘贴）</li>
+        <li>
+          切换到"🖥️ 屏幕截图"选项卡 → 点击"开始截图" → 选择 SADP 窗口 → 自动捕获二维码<br />
+          <em>（或使用"📷 上传二维码"选项卡手动上传/粘贴截图）</em>
+        </li>
         <li>系统自动解码二维码并尝试获取重置密钥</li>
         <li>将密钥输入 SADP 的密钥输入框，设置新密码</li>
       </ol>
@@ -224,14 +284,20 @@ interface KeyResponse {
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
 
 const tabs = [
+  { id: 'capture', label: '🖥️ 屏幕截图' },
   { id: 'qr', label: '📷 上传二维码' },
   { id: 'content', label: '📝 输入内容' },
   { id: 'offline', label: '⚙️ 离线生成' },
 ]
-const activeTab = ref('qr')
+const activeTab = ref('capture')
 const isLoading = ref(false)
 const result = ref<KeyResponse | null>(null)
 const copied = ref(false)
+
+// Screen capture tab
+const capturePreviewUrl = ref<string | null>(null)
+const captureFile = ref<File | null>(null)
+const isCaptureLoading = ref(false)
 
 // QR Upload tab
 const selectedFile = ref<File | null>(null)
@@ -245,6 +311,118 @@ const qrContent = ref('')
 // Offline tab
 const offlineSerial = ref('')
 const offlineDate = ref(new Date().toISOString().slice(0, 10))
+
+// ─── Screen capture ──────────────────────────────────────────────────────────
+
+async function startScreenCapture() {
+  // Check API availability (requires HTTPS or localhost)
+  if (!navigator.mediaDevices?.getDisplayMedia) {
+    result.value = {
+      key: null,
+      qr_content: null,
+      method: null,
+      error: '浏览器不支持屏幕截图功能，请确保在 HTTPS 或 localhost 下使用，并使用 Chrome/Edge/Firefox 浏览器。',
+      raw_response: null,
+    }
+    return
+  }
+
+  isCaptureLoading.value = true
+  result.value = null
+  let stream: MediaStream | null = null
+
+  try {
+    // Ask user to pick a window/screen to share
+    // 请求用户选择要共享的窗口/屏幕
+    stream = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: 1 },
+      audio: false,
+    })
+
+    // Grab a single frame by drawing to an off-screen canvas
+    // 通过绘制到离屏 canvas 捕获单帧
+    const video = document.createElement('video')
+    video.srcObject = stream
+    // Wait for metadata + first renderable frame
+    await new Promise<void>((resolve) => {
+      video.onloadedmetadata = () => {
+        video.play().then(() => resolve()).catch(() => resolve())
+      }
+    })
+    // Small delay to make sure a frame is ready
+    await new Promise<void>((resolve) => setTimeout(resolve, 200))
+
+    const canvas = document.createElement('canvas')
+    canvas.width = video.videoWidth || 1280
+    canvas.height = video.videoHeight || 720
+    const ctx = canvas.getContext('2d')
+    if (!ctx) throw new Error('Cannot get canvas context')
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+
+    // Convert canvas to blob and then to a File object
+    // 将 canvas 转换为 Blob，再转换为 File 对象
+    const blob = await new Promise<Blob>((resolve, reject) =>
+      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('canvas.toBlob failed'))), 'image/png')
+    )
+    const file = new File([blob], 'screen_capture.png', { type: 'image/png' })
+
+    captureFile.value = file
+    capturePreviewUrl.value = URL.createObjectURL(blob)
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    // User cancelled the picker — not a real error
+    // 用户取消了选择弹窗，不算错误
+    if (!msg.includes('Permission denied') && !msg.includes('cancelled') && !msg.includes('NotAllowedError')) {
+      result.value = {
+        key: null,
+        qr_content: null,
+        method: null,
+        error: `屏幕截图失败: ${msg}`,
+        raw_response: null,
+      }
+    }
+  } finally {
+    // Always stop the stream so the browser stops recording indicator
+    // 始终停止流，让浏览器结束录制提示
+    stream?.getTracks().forEach((t) => t.stop())
+    isCaptureLoading.value = false
+  }
+}
+
+function clearCapture() {
+  if (capturePreviewUrl.value) {
+    URL.revokeObjectURL(capturePreviewUrl.value)
+  }
+  capturePreviewUrl.value = null
+  captureFile.value = null
+  result.value = null
+}
+
+async function uploadCapturedImage() {
+  if (!captureFile.value) return
+  isLoading.value = true
+  result.value = null
+  try {
+    const formData = new FormData()
+    formData.append('file', captureFile.value)
+    const response = await fetch(`${API_BASE}/api/qr/upload`, {
+      method: 'POST',
+      body: formData,
+    })
+    if (!response.ok) {
+      const err = await response.json()
+      result.value = { key: null, qr_content: null, method: null, error: err.detail || '上传失败', raw_response: null }
+      return
+    }
+    result.value = await response.json()
+  } catch (e) {
+    result.value = { key: null, qr_content: null, method: null, error: `网络错误: ${e}`, raw_response: null }
+  } finally {
+    isLoading.value = false
+  }
+}
+
+// ─── File upload ─────────────────────────────────────────────────────────────
 
 function triggerFileInput() {
   fileInput.value?.click()
@@ -284,7 +462,7 @@ function clearImage() {
   }
 }
 
-// Handle paste event
+// Handle paste event (Ctrl+V)
 function handlePaste(event: ClipboardEvent) {
   if (activeTab.value !== 'qr') return
   const items = event.clipboardData?.items
@@ -306,7 +484,11 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('paste', handlePaste)
+  // Clean up any object URLs
+  if (capturePreviewUrl.value) URL.revokeObjectURL(capturePreviewUrl.value)
 })
+
+// ─── API calls ───────────────────────────────────────────────────────────────
 
 async function uploadQrImage() {
   if (!selectedFile.value) return
@@ -377,6 +559,8 @@ async function generateOfflineKey() {
     isLoading.value = false
   }
 }
+
+// ─── Utilities ───────────────────────────────────────────────────────────────
 
 async function copyKey(text: string) {
   try {
@@ -460,6 +644,40 @@ function methodLabel(method: string): string {
   line-height: 1.5;
 }
 
+/* ── Screen Capture ── */
+.capture-preview {
+  border: 2px dashed #ccc;
+  border-radius: 12px;
+  min-height: 150px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: #fafafa;
+}
+
+.capture-preview:not(.empty) {
+  border-style: solid;
+  border-color: #d32f2f;
+  padding: 8px;
+}
+
+.capture-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 24px;
+  color: #666;
+  font-size: 0.95rem;
+  text-align: center;
+}
+
+.capture-icon {
+  font-size: 2.5rem;
+}
+
+/* ── Upload area ── */
 .upload-area {
   border: 2px dashed #ccc;
   border-radius: 12px;
@@ -591,6 +809,15 @@ kbd {
 .btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.btn-capture {
+  background: #1565c0;
+  color: white;
+}
+
+.btn-capture:hover:not(:disabled) {
+  background: #0d47a1;
 }
 
 .btn-primary {
