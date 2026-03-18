@@ -27,7 +27,7 @@ A web tool to help reset Hikvision camera passwords. Upload a screenshot of the 
 |---------|-------------|
 | 📷 QR Screenshot Upload | Upload or paste a SADP password-reset QR code screenshot |
 | ⌨️ Ctrl+V Paste | Paste screenshots directly into the upload area — no file saving needed |
-| 🔍 Automatic Decoding | Backend automatically decodes QR codes (pyzbar + OpenCV) |
+| 🔍 Automatic Decoding | Backend automatically decodes QR codes (pure OpenCV — no system libs needed) |
 | 🌐 Online Key Retrieval | If the QR contains a server URL, automatically fetches the key from Hikvision servers |
 | ⚙️ Offline Key Generation | Supports older devices (pre-2017, firmware < 5.3.0) via offline MD5 algorithm |
 | 📝 Manual QR Content Input | Paste pre-decoded QR text directly |
@@ -81,25 +81,8 @@ HiKResetPasswd/
 | Python | 3.12+ | Backend language |
 | Poetry | Any | Python dependency manager |
 | Node.js | 20+ | Frontend build toolchain |
-| libzbar | — | System-level QR code decoding library |
 
-### Installing libzbar
-
-```bash
-# Ubuntu / Debian
-sudo apt-get install -y libzbar0
-
-# macOS (Homebrew)
-brew install zbar
-
-# CentOS / RHEL / Fedora
-sudo yum install zbar
-# or
-sudo dnf install zbar
-
-# Windows
-# Download and install from http://zbar.sourceforge.net
-```
+No system-level libraries are required for QR code decoding — the backend uses pure OpenCV (`opencv-python-headless`), which is installed automatically as a Python package.
 
 ---
 
@@ -315,7 +298,7 @@ After a successful build:
 - **Standalone mode**: Copy the entire `dist/__main__.dist/` directory to the target machine and run `hikresetpasswd` inside it
 - **Onefile mode**: Single executable `dist/hikresetpasswd` — copy and run directly
 
-> **Note**: The target machine still needs `libzbar` installed for QR code decoding.
+> **Note**: No additional system libraries required — QR decoding is handled entirely by `opencv-python-headless` (a pure Python wheel).
 
 ---
 

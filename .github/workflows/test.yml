@@ -36,10 +36,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 安装 libzbar 系统依赖（QR 码解码需要）
-      # Install libzbar system dependency (required for QR code decoding)
-      - name: Install system dependencies (libzbar)
-        run: sudo apt-get update && sudo apt-get install -y libzbar0
+      # 安装系统依赖（无需 libzbar — 已迁移至纯 OpenCV 解码）
+      # Install system dependencies (libzbar not needed — migrated to pure-OpenCV decoding)
+      # (no system package install required)
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5

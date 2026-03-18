@@ -27,7 +27,7 @@
 |------|------|
 | 📷 QR 码截图上传 | 上传或粘贴 SADP 生成的密码重置二维码截图 |
 | ⌨️ Ctrl+V 粘贴 | 直接粘贴截图，无需保存文件 |
-| 🔍 自动解码 | 后端自动识别二维码内容（pyzbar + OpenCV） |
+| 🔍 自动解码 | 后端自动识别二维码内容（纯 OpenCV，无需系统级外部库） |
 | 🌐 在线获取密钥 | 如果二维码包含服务器地址，自动请求海康威视官方服务 |
 | ⚙️ 离线密钥生成 | 支持旧设备（2017年前，固件 < 5.3.0）的离线 MD5 算法 |
 | 📝 手动 QR 内容输入 | 支持直接粘贴已解码的二维码文本 |
@@ -81,25 +81,8 @@ HiKResetPasswd/
 | Python | 3.12+ | 后端语言 |
 | Poetry | 任意版本 | Python 依赖管理 |
 | Node.js | 20+ | 前端构建工具 |
-| libzbar | — | 系统级 QR 码解码库 |
 
-### 安装系统依赖 libzbar
-
-```bash
-# Ubuntu / Debian
-sudo apt-get install -y libzbar0
-
-# macOS（Homebrew）
-brew install zbar
-
-# CentOS / RHEL / Fedora
-sudo yum install zbar
-# 或
-sudo dnf install zbar
-
-# Windows
-# 从 http://zbar.sourceforge.net 下载并安装
-```
+QR 码解码完全由 `opencv-python-headless`（Python 纯轮子包）完成，**无需安装任何系统级外部库**。
 
 ---
 
@@ -298,7 +281,7 @@ poetry run pytest tests/test_keygen.py -v
 - **standalone 模式**：将 `dist/__main__.dist/` 整个目录复制到目标机器，运行其中的 `hikresetpasswd`
 - **onefile 模式**：单个可执行文件 `dist/hikresetpasswd`，直接复制运行
 
-> **注意**：目标机器仍需安装 `libzbar` 系统库（用于 QR 码解码）。
+> **注意**：无需安装任何额外系统库 — QR 码解码完全由 `opencv-python-headless` 处理（纯 Python 轮子包，`poetry install` 时自动安装）。
 
 ---
 

@@ -37,7 +37,7 @@ cp .env.example .env
 
 - **Backend**: Python 3.12 · FastAPI · Poetry · python-dotenv
 - **Frontend**: Vue 3 · TypeScript · Vite
-- **QR Decoding**: pyzbar · OpenCV
+- **QR Decoding**: OpenCV (pure Python, no system libs)
 
 ## ⚠️ 免责声明 / Disclaimer
 
