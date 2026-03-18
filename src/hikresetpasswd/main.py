@@ -214,7 +214,7 @@ if _FRONTEND_DIST.is_dir():
         # Try exact file match (e.g. favicon.ico, robots.txt)
         file_path = (_FRONTEND_DIST / full_path).resolve()
         # 防止路径遍历攻击 / Prevent path traversal attacks
-        if full_path and file_path.is_file() and str(file_path).startswith(str(_FRONTEND_DIST)):
+        if full_path and file_path.is_file() and file_path.is_relative_to(_FRONTEND_DIST):
             return FileResponse(str(file_path))
         # 所有其他路径返回 index.html（Vue Router 处理客户端路由）
         # All other paths return index.html (Vue Router handles client-side routing)

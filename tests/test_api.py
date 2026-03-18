@@ -150,11 +150,11 @@ async def test_offline_key_empty_serial(client):
 
 
 @pytest.mark.asyncio
-async def test_spa_fallback_without_dist(client):
-    """When frontend/dist/ does NOT exist, non-API paths should return 404."""
+async def test_non_api_path_returns_not_found_or_spa(client):
+    """Non-API paths return 404 (no dist/) or 200 (dist/ present for SPA)."""
     response = await client.get("/")
-    # Without dist/, there is no catch-all route, so FastAPI returns 404
-    assert response.status_code in (404, 200)  # 200 if dist/ happens to exist
+    # Without dist/, FastAPI returns 404; with dist/, the SPA catch-all returns 200
+    assert response.status_code in (404, 200)
 
 
 @pytest.mark.asyncio
@@ -193,7 +193,7 @@ async def test_spa_serving_with_dist(tmp_path):
         @test_app.get("/{full_path:path}")
         async def serve(full_path: str):
             file_path = (dist_dir / full_path).resolve()
-            if full_path and file_path.is_file() and str(file_path).startswith(str(dist_dir)):
+            if full_path and file_path.is_file() and file_path.is_relative_to(dist_dir):
                 return FileResponse(str(file_path))
             return FileResponse(str(index_html))
 
