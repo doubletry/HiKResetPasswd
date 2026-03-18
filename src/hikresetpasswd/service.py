@@ -114,8 +114,6 @@ async def process_qr_content(qr_content: str) -> ResetKeyResult:
     qr_content = qr_content.strip()
     # Log only content type/length to avoid leaking sensitive tokens in URL query params
     if qr_content.startswith(("http://", "https://")):
-        from urllib.parse import urlparse
-
         parsed = urlparse(qr_content)
         logger.info("Processing QR content: URL (%s://%s, %d chars)", parsed.scheme, parsed.hostname, len(qr_content))
     else:
