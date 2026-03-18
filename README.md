@@ -25,10 +25,18 @@ cp .env.example .env
 
 # 一键启动 / One-click start
 ./start.sh
+
+# 生产模式（单端口访问）/ Production mode (single port)
+./start.sh --prod
 ```
 
+**开发模式 / Dev mode:**
 - 前端 Frontend: http://localhost:5173  
 - 后端 API Backend: http://localhost:8000  
+
+**生产模式 / Prod mode (`--prod`):**
+- 统一入口 Single port: http://localhost:8000  
+
 - API 文档 Swagger Docs: http://localhost:8000/docs
 
 ---

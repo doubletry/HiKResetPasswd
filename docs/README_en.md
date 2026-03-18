@@ -111,7 +111,7 @@ Once started, open:
 ./start.sh              # Start both backend and frontend (development mode, default)
 ./start.sh --backend    # Start backend only
 ./start.sh --frontend   # Start frontend only
-./start.sh --prod       # Production mode (build frontend + multi-worker backend)
+./start.sh --prod       # Production mode (build frontend + single-port backend)
 ```
 
 ---
@@ -304,30 +304,26 @@ After a successful build:
 
 ## Production Deployment
 
-### Backend (multi-worker)
+### One-command Deploy (single port)
+
+`./start.sh --prod` builds the frontend (`npm run build`), then starts the backend. The backend auto-detects `frontend/dist/` and serves the frontend static files, so **all requests go through a single port (default 8000)** — no extra web server needed.
 
 ```bash
 # Configure production settings in .env
 echo "HOST=0.0.0.0" >> .env
 echo "PORT=8000" >> .env
 echo "LOG_LEVEL=warning" >> .env
-echo "ALLOWED_ORIGINS=http://your-frontend-domain.com" >> .env
 
-# Start in production mode
+# Start in production mode (single-port access at http://HOST:PORT)
 ./start.sh --prod
 # Or manually
+cd frontend && npm run build && cd ..
 poetry run uvicorn hikresetpasswd.main:app --host 0.0.0.0 --port 8000 --workers 4
 ```
 
-### Frontend (static files)
+### nginx Reverse Proxy (optional)
 
-```bash
-cd frontend
-npm run build
-# Serve the dist/ directory with a static web server (e.g. nginx)
-```
-
-### nginx Configuration Example
+If you need HTTPS or domain binding, add nginx in front:
 
 ```nginx
 server {

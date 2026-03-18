@@ -6,18 +6,26 @@ FastAPI 应用，提供以下功能 / FastAPI app providing:
   1. 接收并解码 QR 码图片 / Accept and decode QR code images
   2. 从 QR 内容中尝试获取重置密钥 / Attempt to obtain reset key from QR content
   3. 支持旧设备的离线密钥生成 / Support offline key generation for older devices
+  4. 生产模式下托管前端静态文件 / Serve frontend static files in production mode
 """
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .config import settings
 from .qr_decoder import QRCodeDecodeError, decode_qr_from_bytes
 from .service import generate_key_offline, process_qr_content
+
+# 前端构建输出目录（生产模式下由 FastAPI 托管）
+# Frontend build output directory (served by FastAPI in production mode)
+_FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 
 # 根据配置设置日志级别 / Set log level from config
 logging.basicConfig(level=settings.log_level.upper())
@@ -177,6 +185,42 @@ async def generate_offline_key(request: KeyRequest):
 
     result = await generate_key_offline(request.serial.strip(), request.date.strip())
     return KeyResponse(**result.to_dict())
+
+
+# ---------------------------------------------------------------------------
+# 生产模式：托管前端静态文件（单端口部署）
+# Production mode: serve frontend static files (single-port deployment)
+#
+# 当 frontend/dist/ 目录存在时，自动挂载静态资源并将非 API 路径回退到 index.html，
+# 实现 SPA 路由。开发模式下 dist/ 不存在，不影响开发体验。
+# When frontend/dist/ exists, mount static assets and fall back non-API paths
+# to index.html for SPA routing. In dev mode dist/ doesn't exist, so this is a no-op.
+# ---------------------------------------------------------------------------
+
+if _FRONTEND_DIST.is_dir():
+    # 挂载 Vite 构建产物中的 assets 目录（JS/CSS/图片等）
+    # Mount the Vite build assets directory (JS/CSS/images etc.)
+    _assets_dir = _FRONTEND_DIST / "assets"
+    if _assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="frontend-assets")
+
+    @app.get("/{full_path:path}")
+    async def _serve_frontend(full_path: str):
+        """
+        SPA 回退路由：尝试提供静态文件，否则返回 index.html。
+        SPA fallback: serve the static file if it exists, otherwise return index.html.
+        """
+        # 尝试精确匹配文件（如 favicon.ico, robots.txt 等）
+        # Try exact file match (e.g. favicon.ico, robots.txt)
+        file_path = (_FRONTEND_DIST / full_path).resolve()
+        # 防止路径遍历攻击 / Prevent path traversal attacks
+        if full_path and file_path.is_file() and str(file_path).startswith(str(_FRONTEND_DIST)):
+            return FileResponse(str(file_path))
+        # 所有其他路径返回 index.html（Vue Router 处理客户端路由）
+        # All other paths return index.html (Vue Router handles client-side routing)
+        return FileResponse(str(_FRONTEND_DIST / "index.html"))
+
+    logger.info("Serving frontend from %s", _FRONTEND_DIST)
 
 
 # ---------------------------------------------------------------------------

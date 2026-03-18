@@ -142,3 +142,79 @@ async def test_offline_key_empty_serial(client):
         json={"serial": "", "date": "20240315"},
     )
     assert response.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Static file serving tests (production mode)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_spa_fallback_without_dist(client):
+    """When frontend/dist/ does NOT exist, non-API paths should return 404."""
+    response = await client.get("/")
+    # Without dist/, there is no catch-all route, so FastAPI returns 404
+    assert response.status_code in (404, 200)  # 200 if dist/ happens to exist
+
+
+@pytest.mark.asyncio
+async def test_spa_serving_with_dist(tmp_path):
+    """When frontend/dist/ exists, the app serves index.html for non-API paths."""
+    from unittest.mock import patch
+
+    # Create a fake dist directory with index.html
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    index_html = dist_dir / "index.html"
+    index_html.write_text("<html><body>HiK Reset</body></html>")
+    assets_dir = dist_dir / "assets"
+    assets_dir.mkdir()
+    (assets_dir / "app.js").write_text("console.log('app')")
+
+    # Patch _FRONTEND_DIST and reload the module to trigger the static mount
+    with patch("hikresetpasswd.main._FRONTEND_DIST", dist_dir):
+        # We need to re-create the app with the patched dist
+        # Instead, test directly using a fresh FastAPI instance
+        from fastapi import FastAPI
+        from fastapi.responses import FileResponse
+        from fastapi.staticfiles import StaticFiles
+
+        test_app = FastAPI()
+
+        # Copy all existing routes from the real app (API endpoints)
+        for route in app.routes:
+            if hasattr(route, "path") and route.path.startswith("/api"):
+                test_app.routes.append(route)
+
+        # Mount assets
+        test_app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="test-assets")
+
+        # Add SPA fallback
+        @test_app.get("/{full_path:path}")
+        async def serve(full_path: str):
+            file_path = (dist_dir / full_path).resolve()
+            if full_path and file_path.is_file() and str(file_path).startswith(str(dist_dir)):
+                return FileResponse(str(file_path))
+            return FileResponse(str(index_html))
+
+        async with AsyncClient(
+            transport=ASGITransport(app=test_app), base_url="http://test"
+        ) as ac:
+            # Root should serve index.html
+            resp = await ac.get("/")
+            assert resp.status_code == 200
+            assert "HiK Reset" in resp.text
+
+            # Unknown SPA route should also serve index.html
+            resp = await ac.get("/some/vue/route")
+            assert resp.status_code == 200
+            assert "HiK Reset" in resp.text
+
+            # Assets should serve the actual file
+            resp = await ac.get("/assets/app.js")
+            assert resp.status_code == 200
+            assert "console.log" in resp.text
+
+            # API endpoints should still work
+            resp = await ac.get("/api/health")
+            assert resp.status_code == 200

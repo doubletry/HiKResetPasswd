@@ -171,11 +171,11 @@ case "$MODE" in
         start_frontend
         ;;
     prod)
-        # 生产模式：后台启动后端，前端构建 / Prod: backend in BG, build frontend
-        start_backend &
-        PIDS+=($!)
+        # 生产模式：先构建前端，再启动后端（后端托管前端静态文件，单端口访问）
+        # Prod: build frontend first, then start backend (backend serves frontend, single port)
         start_frontend
-        wait
+        log_info "Frontend built. Backend will serve it on http://${HOST}:${PORT}"
+        start_backend
         ;;
     dev|*)
         # 开发模式：后台启动后端，前台运行前端 / Dev: backend in BG, frontend in FG

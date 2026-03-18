@@ -111,7 +111,7 @@ cp .env.example .env
 ./start.sh              # 同时启动后端和前端（开发模式，默认）
 ./start.sh --backend    # 仅启动后端
 ./start.sh --frontend   # 仅启动前端
-./start.sh --prod       # 生产模式（构建前端 + 多 worker 后端）
+./start.sh --prod       # 生产模式（构建前端 + 单端口后端托管）
 ```
 
 ---
@@ -287,30 +287,26 @@ poetry run pytest tests/test_keygen.py -v
 
 ## 生产部署
 
-### 后端（多 worker）
+### 一键部署（单端口）
+
+`./start.sh --prod` 会先构建前端（`npm run build`），然后启动后端。后端自动检测 `frontend/dist/` 目录并托管前端静态文件，**所有请求通过后端端口（默认 8000）统一访问**，无需额外 Web 服务器。
 
 ```bash
 # 通过 .env 文件配置生产参数
 echo "HOST=0.0.0.0" >> .env
 echo "PORT=8000" >> .env
 echo "LOG_LEVEL=warning" >> .env
-echo "ALLOWED_ORIGINS=http://your-frontend-domain.com" >> .env
 
-# 生产启动
+# 生产启动（单端口访问 http://HOST:PORT）
 ./start.sh --prod
 # 或手动
+cd frontend && npm run build && cd ..
 poetry run uvicorn hikresetpasswd.main:app --host 0.0.0.0 --port 8000 --workers 4
 ```
 
-### 前端（静态文件）
+### 使用 nginx 反向代理（可选）
 
-```bash
-cd frontend
-npm run build
-# dist/ 目录即为静态文件，使用 nginx 等 Web 服务器托管
-```
-
-### nginx 配置示例
+如需 HTTPS 或域名绑定，可在前面加一层 nginx：
 
 ```nginx
 server {
