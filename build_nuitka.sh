@@ -10,7 +10,7 @@
 #   - Python 3.12 + Poetry（用于安装项目依赖）
 #   - Nuitka（编译器，本脚本会自动安装）
 #   - C 编译器：gcc/clang（Linux/macOS）或 MSVC（Windows）
-#   - 系统库：libzbar（QR 解码）、libGL（OpenCV）
+#   - 系统库：libGL（OpenCV headless 可能需要）
 #
 # 用法 / Usage:
 #   ./build_nuitka.sh              # 编译后端 / Compile backend
@@ -104,7 +104,6 @@ NUITKA_OPTS=(
     "--include-package=httpx"
     "--include-package=PIL"
     "--include-package=cv2"
-    "--include-package=pyzbar"
     "--include-package=dotenv"
     "--include-package=multipart"
 
@@ -178,6 +177,4 @@ else
 fi
 
 log_info ""
-log_info "Note: libzbar must be installed on the target system for QR decoding."
-log_info "  Ubuntu/Debian: sudo apt-get install libzbar0"
-log_info "  macOS: brew install zbar"
+log_info "QR decoding uses pure OpenCV — no system-level libzbar required."

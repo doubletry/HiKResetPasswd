@@ -112,7 +112,14 @@ async def process_qr_content(qr_content: str) -> ResetKeyResult:
         ResetKeyResult with the key or error information
     """
     qr_content = qr_content.strip()
-    logger.info("Processing QR content: %s...", qr_content[:50])
+    # Log only content type/length to avoid leaking sensitive tokens in URL query params
+    if qr_content.startswith(("http://", "https://")):
+        from urllib.parse import urlparse
+
+        parsed = urlparse(qr_content)
+        logger.info("Processing QR content: URL (%s://%s, %d chars)", parsed.scheme, parsed.hostname, len(qr_content))
+    else:
+        logger.info("Processing QR content: text (%d chars)", len(qr_content))
 
     # 检查是否为 URL / Check if it's a URL
     if qr_content.startswith(("http://", "https://")):

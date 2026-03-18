@@ -186,7 +186,13 @@ case "$MODE" in
         # Wait for backend health check to pass (up to 30 seconds)
         log_info "Waiting for backend to become ready..."
         for i in $(seq 1 30); do
-            if curl -sf "http://${HOST}:${PORT}/api/health" >/dev/null 2>&1; then
+            if python3 -c "
+import urllib.request, sys
+try:
+    urllib.request.urlopen('http://${HOST}:${PORT}/api/health', timeout=2)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null; then
                 log_info "Backend is ready."
                 break
             fi

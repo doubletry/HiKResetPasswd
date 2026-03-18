@@ -310,7 +310,13 @@ const qrContent = ref('')
 
 // Offline tab
 const offlineSerial = ref('')
-const offlineDate = ref(new Date().toISOString().slice(0, 10))
+const offlineDate = ref((() => {
+  const now = new Date()
+  const y = now.getFullYear()
+  const m = String(now.getMonth() + 1).padStart(2, '0')
+  const d = String(now.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+})())
 
 // ─── Screen capture ──────────────────────────────────────────────────────────
 
@@ -367,6 +373,10 @@ async function startScreenCapture() {
     const file = new File([blob], 'screen_capture.png', { type: 'image/png' })
 
     captureFile.value = file
+    // Revoke previous object URL to prevent memory leaks on repeated captures
+    if (capturePreviewUrl.value) {
+      URL.revokeObjectURL(capturePreviewUrl.value)
+    }
     capturePreviewUrl.value = URL.createObjectURL(blob)
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)

@@ -9,8 +9,8 @@ import os
 
 from dotenv import load_dotenv
 
-# 加载 .env 文件（如果存在则覆盖系统变量，否则忽略）
-# Load .env file (overrides system env if present, silently ignored if absent)
+# 加载 .env 文件（不覆盖已有系统变量，文件不存在则忽略）
+# Load .env file (does NOT override existing system env vars; silently ignored if absent)
 load_dotenv(override=False)
 
 
