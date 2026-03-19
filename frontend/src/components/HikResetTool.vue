@@ -154,10 +154,19 @@
       <h2>📋 SADP 设备特征文件</h2>
       <p class="description">
         在 SADP 工具中，点击"导出"按钮，将设备特征文件上传到此处。
-        系统将自动从文件中提取设备序列号，并使用今日日期生成重置密钥。<br />
+        系统将自动从文件中提取设备序列号，并尝试使用离线算法生成重置密钥。<br />
         In SADP, click "Export" to save the device characteristic file, then upload it here.
-        The system will extract the serial number and generate a key using today's date.
+        The system will extract the serial number and attempt offline key generation.
       </p>
+      <div class="firmware-warning">
+        <strong>⚠️ 重要提示 / Important:</strong>
+        <ul>
+          <li>离线算法<strong>仅适用于旧固件（&lt; 5.3.0）</strong>设备。
+              The offline algorithm <strong>ONLY works for older firmware (&lt; 5.3.0)</strong>.</li>
+          <li>新固件设备（≥ 5.3.0，如 v7.x）需将此文件发送给海康威视官方获取重置文件。
+              For newer firmware (≥ 5.3.0, e.g. v7.x), send this file to Hikvision support to get the unlock file.</li>
+        </ul>
+      </div>
 
       <!-- File Upload Area -->
       <div
@@ -233,11 +242,22 @@
     <div v-if="activeTab === 'offline'" class="tab-content card">
       <h2>⚙️ 离线密钥生成</h2>
 
+      <div class="firmware-warning">
+        <strong>⚠️ 仅适用于旧固件 / Only for older firmware:</strong>
+        <ul>
+          <li>此离线算法<strong>仅适用于固件 &lt; 5.3.0</strong> 的设备（通常为 2017 年以前出厂的设备）。
+              This offline algorithm <strong>ONLY works for firmware &lt; 5.3.0</strong> (typically devices manufactured before 2017).</li>
+          <li>新固件设备（≥ 5.3.0，如 v5.x / v7.x）不支持此方式，请查看下方"新固件重置方法"。
+              Newer firmware (≥ 5.3.0, e.g. v5.x / v7.x) is NOT supported — see "New Firmware Reset Methods" below.</li>
+        </ul>
+      </div>
+
       <p class="description">
-        输入 SADP 中显示的设备序列号和设备当前日期，离线生成重置安全码。<br />
-        对于新设备（固件 ≥ 5.3.0），建议优先使用"📋 设备文件"选项卡上传 SADP 导出的设备特征文件。<br />
-        Enter the serial number and device date shown in SADP. For newer devices (firmware ≥ 5.3.0),
-        we recommend using the "📋 Device File" tab to upload the SADP-exported characteristic file.
+        输入 SADP 中显示的设备序列号和设备内部日期（Start Time 列），离线生成重置安全码。<br />
+        <strong>注意：日期必须与设备内部时间一致（非今日日期），请重启设备后在 SADP 的 Start Time 列查看。</strong><br />
+        Enter the serial number and the device's internal date (Start Time column in SADP).<br />
+        <strong>Note: The date must match the device's internal clock (NOT today's date).
+        Reboot the device and check the Start Time column in SADP.</strong>
       </p>
       <div class="form-group">
         <label>设备序列号 (Serial Number)</label>
@@ -333,24 +353,54 @@
     <!-- Instructions -->
     <div class="instructions card">
       <h3>📋 使用说明</h3>
+
+      <h4>旧固件设备（&lt; 5.3.0，通常 2017 年以前出厂）</h4>
       <ol>
-        <li>在 SADP 工具中找到需要重置密码的摄像头</li>
+        <li>在 SADP 工具中找到需要重置密码的设备</li>
         <li>点击"忘记密码"，进入密码重置界面</li>
         <li>
-          <strong>推荐方式一（设备文件）：</strong> 在 SADP 中点击"导出"按钮 → 使用"📋 设备文件"选项卡上传设备特征文件 → 自动提取序列号生成密钥
+          <strong>方式一（离线生成）：</strong> 使用"⚙️ 离线生成"选项卡 → 输入 SADP 中显示的序列号和设备内部日期（重启设备后查看 Start Time 列）→ 生成安全码
         </li>
         <li>
-          <strong>方式二（离线生成）：</strong> 使用"⚙️ 离线生成"选项卡 → 输入 SADP 中显示的序列号和设备日期 → 生成密钥
+          <strong>方式二（二维码截图）：</strong> 截图上传二维码图片，系统自动解码，尝试在线获取密钥或离线计算
         </li>
-        <li>
-          <strong>方式三（屏幕/二维码截图）：</strong> 截图上传二维码图片，系统自动解码，尝试在线获取密钥或离线计算
-        </li>
-        <li>将密钥输入 SADP 的密钥输入框，设置新密码</li>
+        <li>将安全码输入 SADP 的安全码输入框（Serial Code / Security Code），设置新密码</li>
       </ol>
+
+      <h4>新固件设备（≥ 5.3.0，如 v5.x / v7.x）</h4>
+      <div class="note" style="margin-bottom: 12px">
+        <strong>⚠️ 重要：</strong>
+        新固件设备<strong>不支持离线安全码算法</strong>，必须通过海康威视官方渠道重置。
+        <br />Newer firmware does <strong>NOT</strong> support the offline security code algorithm.
+        You must reset through Hikvision's official channels.
+      </div>
+      <ol>
+        <li>
+          <strong>微信扫码（推荐）：</strong> 在 SADP 中选择二维码方式 → 使用微信扫描二维码 →
+          进入"海康威视客户服务"公众号 → 按提示完成密码重置
+        </li>
+        <li>
+          <strong>导出设备文件：</strong> 在 SADP 中点击"导出"→ 保存设备特征文件（.xml）→
+          通过微信公众号"<strong>海康威视客户服务</strong>"的"贴心服务→密码重置"提交文件 →
+          收到重置文件（Encrypt.xml）后在 SADP 中导入 → 设置新密码
+        </li>
+        <li>
+          <strong>电话联系：</strong> 拨打海康威视技术支持热线 <strong>400-700-5998</strong>，
+          提供设备序列号和导出的设备特征文件
+        </li>
+        <li>
+          <strong>Hik-Connect / 萤石云：</strong> 如果设备已绑定 Hik-Connect 或萤石云账号，
+          可通过 APP 的"忘记密码"功能直接重置
+        </li>
+        <li>
+          <strong>GUID 文件：</strong> 如果初始激活时保存了 GUID 文件，可在 SADP 中直接导入重置
+        </li>
+      </ol>
+
       <div class="note">
         <strong>⚠️ 注意：</strong>
-        离线算法基于序列号和设备日期生成安全码（适用于旧固件设备，固件 &lt; 5.3.0）。
-        如果服务器地址（在中国大陆）无法访问，请优先使用"📋 设备文件"或"⚙️ 离线生成"方式。
+        离线算法基于序列号和设备日期生成安全码，<strong>仅适用于旧固件设备（&lt; 5.3.0）</strong>。
+        新固件设备的所有密码重置均需通过海康威视官方服务器验证，无法本地生成。
       </div>
     </div>
   </div>
@@ -762,9 +812,9 @@ async function copyKey(text: string) {
 
 function methodLabel(method: string): string {
   const labels: Record<string, string> = {
-    offline_v1: '离线算法（序列号+日期）',
-    offline_from_url: '离线算法（从 URL 提取序列号）',
-    offline_v1_from_file: '离线算法（从设备特征文件提取）',
+    offline_v1: '离线算法（序列号+日期，仅旧固件 < 5.3.0）',
+    offline_from_url: '离线算法（从 URL 提取，仅旧固件 < 5.3.0）',
+    offline_v1_from_file: '离线算法（从设备文件提取，仅旧固件 < 5.3.0）',
     url_fetch: '在线获取（通过服务器）',
     url_fetch_via_redirect: '在线获取（通过重定向）',
     sadp_file: 'SADP 设备文件',
@@ -1305,5 +1355,33 @@ kbd {
   font-size: 0.85rem;
   color: #e65100;
   line-height: 1.5;
+}
+
+.instructions h4 {
+  font-size: 0.95rem;
+  color: #d32f2f;
+  margin-top: 16px;
+  margin-bottom: 8px;
+}
+
+/* ── Firmware version warning ── */
+.firmware-warning {
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  background: #fff3e0;
+  border: 2px solid #ff9800;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  color: #e65100;
+  line-height: 1.6;
+}
+
+.firmware-warning ul {
+  margin: 6px 0 0 0;
+  padding-left: 20px;
+}
+
+.firmware-warning li {
+  margin-bottom: 4px;
 }
 </style>

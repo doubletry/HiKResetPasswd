@@ -417,6 +417,10 @@ async def process_sadp_device_file(file_content: str) -> list["ResetKeyResult"]:
     对于每个找到的设备，使用今日日期 + 离线算法生成密钥。
     For each device found, generates a key using today's date + offline algorithm.
 
+    ⚠️ 注意：离线算法仅适用于旧固件（< 5.3.0）设备。新固件设备需要通过海康威视官方渠道重置。
+    ⚠️ Note: The offline algorithm only works for older firmware (< 5.3.0).
+    Newer firmware requires the official Hikvision reset process.
+
     Args:
         file_content: SADP 导出文件的内容 / SADP-exported file content
 
@@ -443,8 +447,10 @@ async def process_sadp_device_file(file_content: str) -> list["ResetKeyResult"]:
             error=(
                 f"Extracted serial '{serial}' from device file, generated key "
                 f"using today's date ({today_str}). "
-                "Note: If this key does not work, use the 'Offline Key Generation' tab "
-                "and enter the exact device date shown in SADP."
+                "⚠️ This offline algorithm ONLY works for older firmware (< 5.3.0). "
+                "For newer firmware (≥ 5.3.0), this key will NOT work — "
+                "please send the device characteristic file to Hikvision support via "
+                "WeChat official account '海康威视客户服务' or call 400-700-5998."
             ),
         ))
 
@@ -853,6 +859,13 @@ async def generate_key_offline(serial: str, date_str: str) -> ResetKeyResult:
             key=key,
             method="offline_v1",
             qr_content=f"Serial: {serial}, Date: {date_str}",
+            error=(
+                "⚠️ This offline algorithm ONLY works for older firmware (< 5.3.0). "
+                "For newer firmware (≥ 5.3.0), this key will NOT work. "
+                "Newer devices require the official Hikvision reset process: "
+                "export the device file from SADP, then send it to Hikvision support "
+                "via WeChat '海康威视客户服务' or call 400-700-5998."
+            ),
         )
     except ValueError as exc:
         return ResetKeyResult(

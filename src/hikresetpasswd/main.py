@@ -185,12 +185,12 @@ async def process_qr_content_endpoint(request: QRContentRequest):
 @app.post("/api/key/offline", response_model=KeyResponse)
 async def generate_offline_key(request: KeyRequest):
     """
-    使用离线算法 v1 生成重置密钥（适用于旧设备，固件 < 5.3.0）。
-    Generate a reset key using the offline algorithm (serial number + date).
+    使用离线算法 v1 生成重置安全码（仅适用于旧设备，固件 < 5.3.0）。
+    Generate a reset security code using the offline algorithm (serial number + date).
 
     使用海康威视专有离线算法（序列号+日期）生成重置安全码。
-    密钥仅对 SADP 中显示的特定日期有效。
-    Note: The key is only valid for the specific date shown in SADP.
+    ⚠️ 此算法仅适用于固件版本 < 5.3.0 的设备。新固件设备需通过海康威视官方渠道重置。
+    ⚠️ This algorithm ONLY works for firmware < 5.3.0. Newer firmware requires Hikvision support.
     """
     if not request.serial.strip():
         raise HTTPException(status_code=400, detail="Serial number cannot be empty")
@@ -204,13 +204,14 @@ async def generate_offline_key(request: KeyRequest):
 @app.post("/api/sadp/upload", response_model=SADPFileResponse)
 async def upload_sadp_file(file: UploadFile = File(...)):
     """
-    上传 SADP 导出的设备特征文件，解析设备序列号并生成重置密钥。
-    Upload a SADP-exported device characteristic file, extract serial numbers, generate keys.
+    上传 SADP 导出的设备特征文件，解析设备序列号并尝试生成重置安全码。
+    Upload a SADP-exported device characteristic file, extract serial numbers, attempt key generation.
 
     SADP 导出的设备特征文件为二进制格式（扩展名通常为 .xml），包含设备序列号等信息。
-    上传后，系统将提取文件中的序列号并使用今日日期生成重置密钥。
-    SADP device characteristic files are binary (usually with .xml extension) containing
-    the device serial number. The system extracts serials and generates keys using today's date.
+    上传后，系统将提取文件中的序列号并使用离线算法尝试生成安全码。
+    ⚠️ 离线算法仅适用于固件 < 5.3.0。新固件设备需将此文件发送给海康威视官方获取重置文件。
+    ⚠️ The offline algorithm ONLY works for firmware < 5.3.0. For newer firmware, send the file
+    to Hikvision support to get the unlock file.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided")

@@ -132,6 +132,14 @@ class TestGenerateKeyOffline:
         assert result.key is not None
         assert len(result.key) >= 1
 
+    @pytest.mark.asyncio
+    async def test_includes_firmware_version_warning(self):
+        """Offline key result should warn about firmware version limitations."""
+        result = await generate_key_offline("DS-2CD2T45G0P-I", "20240315")
+        assert result.key is not None
+        assert result.error is not None
+        assert "< 5.3.0" in result.error or "5.3.0" in result.error
+
 
 class TestSSRFProtection:
     @pytest.mark.asyncio
@@ -477,6 +485,17 @@ class TestProcessSadpDeviceFile:
         assert results[0].key is not None
         assert len(results[0].key) >= 1
         assert results[0].method == "offline_v1_from_file"
+
+    @pytest.mark.asyncio
+    async def test_sadp_file_result_includes_firmware_warning(self):
+        """SADP file results should include firmware version limitation warning."""
+        content = (
+            "AwAAAJGP7B9KFhBeCOnsI9y5de4DS-2CD3525FV3-IT20231211AACHAX8748548"
+        )
+        results = await process_sadp_device_file(content)
+        assert len(results) == 1
+        assert results[0].error is not None
+        assert "< 5.3.0" in results[0].error or "5.3.0" in results[0].error
 
     @pytest.mark.asyncio
     async def test_no_serial_returns_error_result(self):
