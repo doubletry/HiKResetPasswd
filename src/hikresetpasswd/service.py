@@ -925,11 +925,12 @@ async def _try_secondary_urls(
         try:
             # 二级 URL（微信等）使用微信风格请求头
             # Secondary URLs (WeChat etc.) use WeChat-style headers
-            sec_headers = (
-                _WECHAT_HEADERS
-                if "weixin" in sec_hostname or "qq.com" in sec_hostname
-                else _BROWSER_HEADERS
+            is_wechat_domain = (
+                sec_hostname == "weixin.qq.com"
+                or sec_hostname.endswith(".weixin.qq.com")
+                or sec_hostname.endswith(".qq.com")
             )
+            sec_headers = _WECHAT_HEADERS if is_wechat_domain else _BROWSER_HEADERS
             async with httpx.AsyncClient(
                 timeout=20.0,
                 headers=sec_headers,
