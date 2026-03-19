@@ -127,12 +127,15 @@
       <h2>📝 输入二维码内容</h2>
       <p class="description">
         如果您已经通过其他方式解码了二维码，可以直接输入二维码的文本内容。
+        支持 URL、设备数据、SADP 挑战数据（QRC 格式）等多种格式。<br />
+        If you have already decoded the QR code, paste the text content directly.
+        Supports URLs, device data, SADP challenge data (QRC format), etc.
       </p>
       <div class="form-group">
-        <label>二维码内容</label>
+        <label>二维码内容 / QR Code Content</label>
         <textarea
           v-model="qrContent"
-          placeholder="例如: B:DS-7908HQH-SH**AwAAADQ3NDAyNzYxOCmhQkw= 或 https://..."
+          placeholder="支持多种格式 / Supports multiple formats:&#10;- URL: https://servicewechat.hikvision.com/...&#10;- 设备数据: B:DS-7908HQH-SH**AwAAADQ3NDAyNzYxOCmhQkw=&#10;- QRC 格式: QRC03010003...&#10;- SN 格式: SN:DS-XXXX;DATE:2024-03-15;CHALLENGE:XXXX"
           rows="4"
           class="textarea"
         ></textarea>
@@ -249,21 +252,32 @@
 
     <!-- Instructions -->
     <div class="instructions card">
-      <h3>📋 使用说明</h3>
+      <h3>📋 使用说明 / Instructions</h3>
       <ol>
-        <li>在 SADP 工具中找到需要重置密码的摄像头</li>
-        <li>点击"忘记密码"，选择"二维码方式"</li>
+        <li>在 SADP 工具中找到需要重置密码的摄像头 / Find the camera in SADP tool</li>
+        <li>点击"忘记密码"，选择"二维码方式" / Click "Forgot Password", choose QR code method</li>
         <li>
           切换到"🖥️ 屏幕截图"选项卡 → 点击"开始截图" → 选择 SADP 窗口 → 自动捕获二维码<br />
-          <em>（或使用"📷 上传二维码"选项卡手动上传/粘贴截图）</em>
+          Switch to Screen Capture tab → Click capture → Select SADP window → Auto-capture QR code<br />
+          <em>（或使用"📷 上传二维码"选项卡手动上传/粘贴截图 / Or use Upload tab to upload/paste screenshot）</em>
         </li>
-        <li>系统自动解码二维码并尝试获取重置密钥</li>
-        <li>将密钥输入 SADP 的密钥输入框，设置新密码</li>
+        <li>系统自动解码二维码并尝试通过多种方式获取重置密钥 / System auto-decodes QR and tries multiple methods to get reset key</li>
+        <li>将密钥输入 SADP 的密钥输入框，设置新密码 / Enter the key in SADP and set new password</li>
       </ol>
       <div class="note">
-        <strong>⚠️ 注意：</strong> 对于新型设备，密钥通过官方服务器获取。
-        如果二维码包含服务器地址，将自动请求获取密钥。
-        对于旧设备，请使用"离线密钥生成"选项卡。
+        <strong>⚠️ 支持的方式 / Supported methods:</strong><br />
+        <ul style="margin: 8px 0 0 16px; padding: 0; list-style-type: disc;">
+          <li><strong>在线获取:</strong> QR 码包含海康/微信服务器地址时，自动请求并提取密钥（支持 WAF 绕过和多步跳转）</li>
+          <li><strong>SADP 挑战数据:</strong> 检测 QRC 格式或 SN/CHALLENGE 格式，尝试提交至海康服务端点</li>
+          <li><strong>离线算法:</strong> 对于旧设备（固件 &lt; 5.3.0），使用序列号+日期的 MD5 算法生成密钥</li>
+          <li><strong>手动方式:</strong> 无法自动获取时，提供详细的手动操作指引（微信公众号/客服电话）</li>
+        </ul>
+      </div>
+      <div class="note" style="margin-top: 8px;">
+        <strong>💡 新型设备（固件 ≥ 5.3.0）说明:</strong>
+        对于新型设备，SADP 二维码包含加密的设备挑战数据。系统会尝试直接调用海康威视服务端点获取密钥。
+        如果自动获取失败，请通过微信"海康威视客户服务"公众号 → 服务支持 → 密码重置进行手动操作，
+        或拨打海康客服热线 400-700-5998。
       </div>
     </div>
   </div>
@@ -592,9 +606,12 @@ async function copyKey(text: string) {
 
 function methodLabel(method: string): string {
   const labels: Record<string, string> = {
-    offline_v1: '离线算法（旧设备）',
-    url_fetch: '在线获取（通过服务器）',
-    raw: '原始内容',
+    offline_v1: '离线算法（旧设备）/ Offline algorithm (older devices)',
+    url_fetch: '在线获取（通过服务器）/ Online fetch (via server)',
+    url_redirect: '在线获取（多步跳转）/ Online fetch (multi-step redirect)',
+    hikvision_service: '海康服务端点 / Hikvision service endpoint',
+    sadp_challenge: 'SADP 挑战数据 / SADP challenge data',
+    raw: '原始内容 / Raw content',
   }
   return labels[method] || method
 }
