@@ -52,13 +52,54 @@ HIKVISION_DOMAINS = [
     "weixin.qq.com",  # WeChat — used by Hikvision for key distribution in China / 微信公众号密钥分发
 ]
 
-# 模拟移动端浏览器（微信风格）的 User-Agent
-# User agent to mimic a mobile browser (WeChat-like)
-MOBILE_UA = (
-    "Mozilla/5.0 (Linux; Android 12; SM-G9910) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/107.0.0.0 Mobile Safari/537.36 "
-    "MicroMessenger/8.0.40"
-)
+# 模拟现代桌面浏览器的请求头集合
+# Headers that mimic a modern desktop browser to avoid WAF/bot detection
+# 海康云安全平台会检测异常访问行为（如缺少标准浏览器头部），返回 JS 挑战页面。
+# Hikvision's cloud security platform detects abnormal access (missing standard browser
+# headers) and returns a JS challenge page instead of the actual content.
+_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+    "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+}
+
+# 微信移动端浏览器请求头（用于需要微信身份的二级 URL）
+# WeChat mobile browser headers (for secondary URLs requiring WeChat identity)
+_WECHAT_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Linux; Android 14; SM-S9280) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36 "
+        "MicroMessenger/8.0.47"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+}
+
+# 海康威视 WAF 拦截页面的特征关键词
+# Signature keywords found in Hikvision cloud security WAF block pages
+_WAF_SIGNATURES = [
+    "changePageElem",
+    "errorTip",
+    "云安全平台检测到您当前的访问行为存在异常",
+    "Your current behavior is detected as abnormal",
+    "请稍后重试",
+    "Please try again later",
+]
 
 # 从响应内容中提取密钥的正则表达式列表
 # Regex patterns for extracting keys from responses
@@ -122,12 +163,14 @@ class ResetKeyResult:
         method: Optional[str] = None,
         error: Optional[str] = None,
         raw_response: Optional[str] = None,
+        waf_blocked: bool = False,
     ):
         self.key = key
         self.qr_content = qr_content
         self.method = method
         self.error = error
         self.raw_response = raw_response
+        self.waf_blocked = waf_blocked
 
     def to_dict(self) -> dict:
         """转为字典，供 Pydantic 模型使用 / Convert to dict for Pydantic model."""
@@ -137,6 +180,7 @@ class ResetKeyResult:
             "method": self.method,
             "error": self.error,
             "raw_response": self.raw_response,
+            "waf_blocked": self.waf_blocked,
         }
 
 
@@ -597,6 +641,41 @@ def _find_redirect_urls(content: str) -> list[str]:
     return urls
 
 
+def _is_waf_blocked(content: str) -> bool:
+    """
+    检测响应内容是否为海康威视云安全平台的 WAF 拦截页面。
+    Detect whether the response is a Hikvision cloud security WAF block page.
+
+    海康威视使用 JS 挑战页面来拦截非浏览器请求。该页面包含特征关键词如
+    "changePageElem"、"errorTip"、"云安全平台检测到您当前的访问行为存在异常" 等。
+    Hikvision uses a JS challenge page to block non-browser requests. The page
+    contains signature keywords like "changePageElem", "errorTip", etc.
+
+    Args:
+        content: HTTP 响应内容 / HTTP response content
+
+    Returns:
+        True 如果检测到 WAF 拦截页面 / True if a WAF block page is detected
+    """
+    return any(sig in content for sig in _WAF_SIGNATURES)
+
+
+_WAF_BLOCKED_ERROR = (
+    "⚠️ 海康威视云安全平台拦截了后台的请求（检测为异常访问）。"
+    "这是因为后台 HTTP 客户端无法通过 JS 挑战验证。\n"
+    "请尝试以下方法：\n"
+    "① 在浏览器中直接打开此 URL（复制下方二维码内容到浏览器地址栏）\n"
+    "② 使用「⚙️ 离线生成」选项卡手动输入序列号和日期\n"
+    "③ 使用微信扫描 SADP 中的二维码\n"
+    " / ⚠️ Hikvision cloud WAF blocked the backend request (detected as abnormal). "
+    "This is because the backend HTTP client cannot pass the JS challenge.\n"
+    "Please try:\n"
+    "① Open the URL directly in your browser (copy the QR content below)\n"
+    "② Use the 'Offline Key Generation' tab with serial number and date\n"
+    "③ Scan the SADP QR code with WeChat"
+)
+
+
 async def _process_url(url: str) -> ResetKeyResult:
     """
     请求 QR 码中的 URL 并尝试提取重置密钥。
@@ -643,15 +722,39 @@ async def _process_url(url: str) -> ResetKeyResult:
         )
 
     try:
-        # 模拟移动端微信浏览器请求 / Simulate mobile WeChat browser request
+        # 使用完整的浏览器请求头，避免被海康云安全 WAF 拦截
+        # Use full browser-like headers to avoid Hikvision cloud security WAF blocking
         async with httpx.AsyncClient(
             timeout=30.0,
-            headers={"User-Agent": MOBILE_UA},
+            headers=_BROWSER_HEADERS,
             follow_redirects=True,
         ) as client:
             response = await client.get(url)
             response.raise_for_status()
             content = response.text
+
+        # 检测 WAF 拦截页面 / Detect WAF block page
+        if _is_waf_blocked(content):
+            logger.warning("Hikvision WAF blocked the request for %s", hostname)
+            # 即使被 WAF 拦截，仍尝试从 URL 参数离线生成
+            # Even if WAF blocked, try offline generation from URL params
+            offline = _try_offline_from_url(url)
+            if offline is not None:
+                offline.waf_blocked = True
+                offline.error = (
+                    _WAF_BLOCKED_ERROR + "\n\n"
+                    "但已从 URL 中提取序列号并尝试离线生成（仅旧固件有效）。"
+                    " / However, serial was extracted from URL for offline generation "
+                    "(only works for old firmware).\n\n" + (offline.error or "")
+                )
+                return offline
+            return ResetKeyResult(
+                qr_content=url,
+                method="url_fetch",
+                error=_WAF_BLOCKED_ERROR,
+                raw_response=content[:2000],
+                waf_blocked=True,
+            )
 
         # 从响应中提取密钥 / Try to extract key from response
         key = _extract_key_from_response(content)
@@ -680,14 +783,33 @@ async def _process_url(url: str) -> ResetKeyResult:
             error=(
                 "The Hikvision server was reached but no reset key was found in its response. "
                 "The key may require interactive WeChat authentication that cannot be automated. "
-                "Please try the 'Offline Key Generation' tab — enter the serial number and "
-                "device date shown in SADP."
+                "Please try:\n"
+                "① Open the URL directly in your browser\n"
+                "② Use the 'Offline Key Generation' tab — enter the serial number and "
+                "device date shown in SADP\n"
+                "③ Scan the QR code with WeChat on your phone"
             ),
             raw_response=content[:2000],
         )
 
     except httpx.HTTPStatusError as exc:
         status = exc.response.status_code
+        resp_text = exc.response.text
+        # 检查 HTTP 错误响应是否为 WAF 拦截
+        # Check if the HTTP error response is a WAF block
+        if _is_waf_blocked(resp_text):
+            logger.warning("Hikvision WAF blocked with HTTP %d for %s", status, hostname)
+            offline = _try_offline_from_url(url)
+            if offline is not None:
+                offline.waf_blocked = True
+                return offline
+            return ResetKeyResult(
+                qr_content=url,
+                method="url_fetch",
+                error=_WAF_BLOCKED_ERROR,
+                raw_response=resp_text[:2000],
+                waf_blocked=True,
+            )
         # 403 或其他 HTTP 错误：先尝试从 URL 参数离线提取序列号
         # 403 or other HTTP error: first try offline extraction from URL params
         offline = _try_offline_from_url(url)
@@ -700,7 +822,8 @@ async def _process_url(url: str) -> ResetKeyResult:
                 f"HTTP {status} error when fetching the Hikvision reset URL. "
                 "The server could not be reached from this network (it may be restricted to "
                 "China/internal networks). "
-                "Please use the 'Offline Key Generation' tab: enter the serial number and "
+                "Please try opening the URL directly in your browser, or use the "
+                "'Offline Key Generation' tab: enter the serial number and "
                 "device date shown in SADP."
             ),
         )
@@ -800,14 +923,26 @@ async def _try_secondary_urls(
 
         logger.info("Trying secondary URL from response: %s://%s", sec_parsed.scheme, sec_hostname)
         try:
+            # 二级 URL（微信等）使用微信风格请求头
+            # Secondary URLs (WeChat etc.) use WeChat-style headers
+            sec_headers = (
+                _WECHAT_HEADERS
+                if "weixin" in sec_hostname or "qq.com" in sec_hostname
+                else _BROWSER_HEADERS
+            )
             async with httpx.AsyncClient(
                 timeout=20.0,
-                headers={"User-Agent": MOBILE_UA},
+                headers=sec_headers,
                 follow_redirects=True,
             ) as client:
                 sec_response = await client.get(sec_url)
                 sec_response.raise_for_status()
                 sec_content = sec_response.text
+
+            # 跳过 WAF 拦截的二级响应 / Skip WAF-blocked secondary responses
+            if _is_waf_blocked(sec_content):
+                logger.debug("Secondary URL WAF blocked: %s", sec_url)
+                continue
 
             key = _extract_key_from_response(sec_content)
             if key:

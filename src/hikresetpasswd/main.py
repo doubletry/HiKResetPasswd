@@ -113,6 +113,7 @@ class KeyResponse(BaseModel):
     method: str | None = Field(None, description="Method used to obtain the key / 获取密钥的方式")
     error: str | None = Field(None, description="Error message if key could not be obtained / 错误信息")
     raw_response: str | None = Field(None, description="Raw response from server if applicable / 服务器原始响应")
+    waf_blocked: bool = Field(False, description="Whether request was blocked by Hikvision WAF / 是否被海康 WAF 拦截")
 
 
 class SADPFileResponse(BaseModel):

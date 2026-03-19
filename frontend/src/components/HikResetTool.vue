@@ -403,8 +403,8 @@
       <!-- QR Decoded but No Key -->
       <div v-else-if="result.qr_content && !result.key" class="result-card info">
         <div class="result-header">
-          <span class="result-icon">ℹ️</span>
-          <h3>二维码已解码</h3>
+          <span class="result-icon">{{ result.waf_blocked ? '🛡️' : 'ℹ️' }}</span>
+          <h3>{{ result.waf_blocked ? '云安全拦截 / WAF Blocked' : '二维码已解码' }}</h3>
         </div>
         <div class="form-group">
           <span class="meta-label">二维码内容:</span>
@@ -415,7 +415,30 @@
             </button>
           </div>
         </div>
-        <div v-if="result.error" class="result-note">
+
+        <!-- WAF 拦截时显示浏览器打开按钮 / Show "open in browser" button when WAF blocked -->
+        <div v-if="result.waf_blocked && result.qr_content?.startsWith('http')" class="waf-actions">
+          <p class="waf-tip">
+            💡 <strong>推荐操作：</strong>在浏览器中直接打开此链接获取密钥。<br />
+            <strong>Recommended:</strong> Open this link directly in your browser to get the key.
+          </p>
+          <div class="actions">
+            <a
+              :href="result.qr_content"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="btn btn-primary"
+              style="text-decoration: none"
+            >
+              🌐 在浏览器中打开链接
+            </a>
+            <button class="btn btn-secondary" @click="copyKey(result.qr_content!)">
+              📋 复制链接
+            </button>
+          </div>
+        </div>
+
+        <div v-if="result.error" class="result-note" style="white-space: pre-line">
           {{ result.error }}
         </div>
         <div v-if="result.raw_response" class="raw-response">
@@ -501,6 +524,7 @@ interface KeyResponse {
   method: string | null
   error: string | null
   raw_response: string | null
+  waf_blocked: boolean
 }
 
 interface SADPFileResponse {
@@ -598,6 +622,7 @@ async function startScreenCapture() {
       method: null,
       error: '浏览器不支持屏幕截图功能，请确保在 HTTPS 或 localhost 下使用，并使用 Chrome/Edge/Firefox 浏览器。',
       raw_response: null,
+      waf_blocked: false,
     }
     return
   }
@@ -658,6 +683,7 @@ async function startScreenCapture() {
         method: null,
         error: `屏幕截图失败: ${msg}`,
         raw_response: null,
+        waf_blocked: false,
       }
     }
   } finally {
@@ -690,12 +716,22 @@ async function uploadCapturedImage() {
     })
     if (!response.ok) {
       const err = await response.json()
-      result.value = { key: null, qr_content: null, method: null, error: err.detail || '上传失败', raw_response: null }
+      result.value = { key: null, qr_content: null, method: null, error: err.detail || '上传失败', raw_response: null, waf_blocked: false }
       return
     }
-    result.value = await response.json()
+    const data: KeyResponse = await response.json()
+
+    // 如果后端被 WAF 拦截且 QR 内容是 URL，尝试浏览器端直接获取
+    if (data.waf_blocked && data.qr_content?.startsWith('http')) {
+      const browserResult = await tryBrowserFetch(data.qr_content)
+      if (browserResult) {
+        result.value = browserResult
+        return
+      }
+    }
+    result.value = data
   } catch (e) {
-    result.value = { key: null, qr_content: null, method: null, error: `网络错误: ${e}`, raw_response: null }
+    result.value = { key: null, qr_content: null, method: null, error: `网络错误: ${e}`, raw_response: null, waf_blocked: false }
   } finally {
     isLoading.value = false
   }
@@ -882,6 +918,70 @@ async function uploadSadpFile() {
 
 // ─── API calls ───────────────────────────────────────────────────────────────
 
+// 海康威视密钥提取正则（与后端一致，用于浏览器端 URL 获取后解析）
+// Key extraction patterns (matching backend, for browser-side URL fetch parsing)
+const KEY_PATTERNS = [
+  /"key"\s*:\s*"([A-Za-z0-9-]{4,})"/,
+  /"securityCode"\s*:\s*"([A-Za-z0-9-]{4,})"/,
+  /"safeCode"\s*:\s*"([A-Za-z0-9-]{4,})"/,
+  /"resetCode"\s*:\s*"([A-Za-z0-9-]{4,})"/,
+  /"verifyCode"\s*:\s*"([A-Za-z0-9-]{4,})"/,
+  /"code"\s*:\s*"([A-Za-z0-9-]{4,})"/,
+  /安全码[：:]\s*([A-Za-z0-9-]{4,})/,
+  /重置口令[：:]\s*([A-Za-z0-9-]{4,})/,
+  /验证码[：:]\s*([0-9]{4,})/,
+]
+
+function extractKeyFromContent(content: string): string | null {
+  for (const pattern of KEY_PATTERNS) {
+    const match = content.match(pattern)
+    if (match && match[1] && match[1].length >= 4) {
+      return match[1]
+    }
+  }
+  return null
+}
+
+/**
+ * 当后端被 WAF 拦截时，尝试通过浏览器直接获取 URL 内容。
+ * When backend is WAF-blocked, try fetching the URL directly from the browser.
+ * 浏览器具有真实的 TLS 指纹和 cookie 处理能力，可能通过 WAF 检测。
+ * The browser has real TLS fingerprint and cookie handling that may pass WAF.
+ * 注意：跨域请求可能被 CORS 阻止，此时回退到提示用户手动操作。
+ * Note: Cross-origin requests may be blocked by CORS; falls back to manual guidance.
+ */
+async function tryBrowserFetch(url: string): Promise<KeyResponse | null> {
+  try {
+    const resp = await fetch(url, {
+      mode: 'cors',
+      credentials: 'omit',
+      headers: { 'Accept': 'text/html,application/json,*/*' },
+    })
+    if (!resp.ok) return null
+    const text = await resp.text()
+
+    // 检查是否仍被 WAF 拦截 / Check if still WAF blocked
+    if (text.includes('changePageElem') || text.includes('abnormal')) {
+      return null
+    }
+
+    const key = extractKeyFromContent(text)
+    if (key) {
+      return {
+        key,
+        qr_content: url,
+        method: 'browser_fetch',
+        error: null,
+        raw_response: text.substring(0, 2000),
+        waf_blocked: false,
+      }
+    }
+  } catch {
+    // CORS or network error — expected for cross-origin requests
+  }
+  return null
+}
+
 async function uploadQrImage() {
   if (!selectedFile.value) return
   isLoading.value = true
@@ -895,12 +995,23 @@ async function uploadQrImage() {
     })
     if (!response.ok) {
       const err = await response.json()
-      result.value = { key: null, qr_content: null, method: null, error: err.detail || '上传失败', raw_response: null }
+      result.value = { key: null, qr_content: null, method: null, error: err.detail || '上传失败', raw_response: null, waf_blocked: false }
       return
     }
-    result.value = await response.json()
+    const data: KeyResponse = await response.json()
+
+    // 如果后端被 WAF 拦截且 QR 内容是 URL，尝试浏览器端直接获取
+    // If backend was WAF-blocked and QR content is a URL, try browser-side fetch
+    if (data.waf_blocked && data.qr_content?.startsWith('http')) {
+      const browserResult = await tryBrowserFetch(data.qr_content)
+      if (browserResult) {
+        result.value = browserResult
+        return
+      }
+    }
+    result.value = data
   } catch (e) {
-    result.value = { key: null, qr_content: null, method: null, error: `网络错误: ${e}`, raw_response: null }
+    result.value = { key: null, qr_content: null, method: null, error: `网络错误: ${e}`, raw_response: null, waf_blocked: false }
   } finally {
     isLoading.value = false
   }
@@ -918,12 +1029,23 @@ async function processQrContent() {
     })
     if (!response.ok) {
       const err = await response.json()
-      result.value = { key: null, qr_content: null, method: null, error: err.detail || '处理失败', raw_response: null }
+      result.value = { key: null, qr_content: null, method: null, error: err.detail || '处理失败', raw_response: null, waf_blocked: false }
       return
     }
-    result.value = await response.json()
+    const data: KeyResponse = await response.json()
+
+    // 如果后端被 WAF 拦截且 QR 内容是 URL，尝试浏览器端直接获取
+    // If backend was WAF-blocked and QR content is a URL, try browser-side fetch
+    if (data.waf_blocked && data.qr_content?.startsWith('http')) {
+      const browserResult = await tryBrowserFetch(data.qr_content)
+      if (browserResult) {
+        result.value = browserResult
+        return
+      }
+    }
+    result.value = data
   } catch (e) {
-    result.value = { key: null, qr_content: null, method: null, error: `网络错误: ${e}`, raw_response: null }
+    result.value = { key: null, qr_content: null, method: null, error: `网络错误: ${e}`, raw_response: null, waf_blocked: false }
   } finally {
     isLoading.value = false
   }
@@ -941,12 +1063,12 @@ async function generateOfflineKey() {
     })
     if (!response.ok) {
       const err = await response.json()
-      result.value = { key: null, qr_content: null, method: null, error: err.detail || '生成失败', raw_response: null }
+      result.value = { key: null, qr_content: null, method: null, error: err.detail || '生成失败', raw_response: null, waf_blocked: false }
       return
     }
     result.value = await response.json()
   } catch (e) {
-    result.value = { key: null, qr_content: null, method: null, error: `网络错误: ${e}`, raw_response: null }
+    result.value = { key: null, qr_content: null, method: null, error: `网络错误: ${e}`, raw_response: null, waf_blocked: false }
   } finally {
     isLoading.value = false
   }
@@ -979,6 +1101,7 @@ function methodLabel(method: string): string {
     offline_v1_from_file: '离线算法（从设备文件提取，仅旧固件 < 5.3.0）',
     url_fetch: '在线获取（通过服务器）',
     url_fetch_via_redirect: '在线获取（通过重定向）',
+    browser_fetch: '浏览器端直接获取（绕过 WAF）',
     sadp_file: 'SADP 设备文件',
     sadp_discovery: 'SADP 局域网设备发现',
     raw: '原始内容',
@@ -1672,6 +1795,23 @@ kbd {
   border: 2px solid #ff9800;
   border-radius: 8px;
   color: #e65100;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+/* ─── WAF block styles ──────────────────────────────────────────────────── */
+
+.waf-actions {
+  margin: 12px 0;
+  padding: 16px;
+  background: #e3f2fd;
+  border: 2px solid #1976d2;
+  border-radius: 8px;
+}
+
+.waf-tip {
+  margin-bottom: 12px;
+  color: #0d47a1;
   font-size: 0.9rem;
   line-height: 1.5;
 }

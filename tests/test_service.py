@@ -8,6 +8,7 @@ from hikresetpasswd.service import (
     _extract_key_from_response,
     _extract_serial_from_url,
     _find_redirect_urls,
+    _is_waf_blocked,
     _looks_like_device_data,
     generate_key_offline,
     parse_sadp_device_file,
@@ -540,6 +541,7 @@ class TestWeChat403ErrorMessages:
         with patch("hikresetpasswd.service.httpx.AsyncClient") as mock_client_class:
             mock_response = MagicMock()
             mock_response.status_code = 403
+            mock_response.text = "403 Forbidden"
             mock_client = AsyncMock()
             mock_client.get = AsyncMock(
                 side_effect=httpx.HTTPStatusError(
@@ -556,3 +558,114 @@ class TestWeChat403ErrorMessages:
             assert "WeChat browser on a mobile device in China" not in (result.error or "")
             # Should guide to offline tab
             assert "Offline Key Generation" in (result.error or "") or "offline" in (result.error or "").lower()
+
+
+class TestWAFDetection:
+    """Tests for Hikvision cloud security WAF detection."""
+
+    def test_detects_waf_with_change_page_elem(self):
+        """Detect WAF block page with changePageElem keyword."""
+        content = """
+        <html><head><script>
+        function changePageElem(){
+            var langObj={
+                'errorTip':['云安全平台检测到您当前的访问行为存在异常','abnormal']
+            }
+        }
+        </script></head></html>
+        """
+        assert _is_waf_blocked(content) is True
+
+    def test_detects_waf_with_chinese_message(self):
+        """Detect WAF block with Chinese error message."""
+        content = "云安全平台检测到您当前的访问行为存在异常，请稍后重试"
+        assert _is_waf_blocked(content) is True
+
+    def test_detects_waf_with_english_message(self):
+        """Detect WAF block with English error message."""
+        content = "Your current behavior is detected as abnormal, Please try again later"
+        assert _is_waf_blocked(content) is True
+
+    def test_normal_response_not_detected_as_waf(self):
+        """Normal responses should not be detected as WAF."""
+        content = '{"key": "TESTKEY123", "status": "ok"}'
+        assert _is_waf_blocked(content) is False
+
+    def test_empty_content_not_detected_as_waf(self):
+        """Empty content should not be detected as WAF."""
+        assert _is_waf_blocked("") is False
+
+    def test_html_key_page_not_detected_as_waf(self):
+        """Normal Hikvision key page should not be WAF-blocked."""
+        content = '<div>安全码：RSSQeRqeee</div>'
+        assert _is_waf_blocked(content) is False
+
+    @pytest.mark.asyncio
+    async def test_waf_blocked_url_returns_waf_flag(self):
+        """When WAF blocks a URL request, result should have waf_blocked=True."""
+        waf_html = """
+        <html><head><script>
+        function changePageElem(){
+            var langObj={'errorTip':['云安全平台检测到您当前的访问行为存在异常','abnormal']}
+        }
+        </script></head></html>
+        """
+        url = "https://hikvision.com/reset?token=test123"
+        with patch("hikresetpasswd.service.httpx.AsyncClient") as mock_client_class:
+            mock_response = MagicMock()
+            mock_response.text = waf_html
+            mock_response.raise_for_status = MagicMock()
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_class.return_value = mock_client
+
+            result = await process_qr_content(url)
+            assert result.waf_blocked is True
+            assert result.key is None
+            assert "WAF" in result.error or "云安全" in result.error or "拦截" in result.error
+
+    @pytest.mark.asyncio
+    async def test_waf_blocked_url_with_serial_tries_offline(self):
+        """WAF-blocked URL with serial in params should try offline generation."""
+        waf_html = "Your current behavior is detected as abnormal, Please try again later"
+        url = "https://hikvision.com/reset?sn=DS-2CD2T45G0P-I&date=20240315"
+        with patch("hikresetpasswd.service.httpx.AsyncClient") as mock_client_class:
+            mock_response = MagicMock()
+            mock_response.text = waf_html
+            mock_response.raise_for_status = MagicMock()
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_class.return_value = mock_client
+
+            result = await process_qr_content(url)
+            assert result.waf_blocked is True
+            # Should still generate offline key from URL params
+            assert result.key is not None
+            assert len(result.key) >= 1
+
+    @pytest.mark.asyncio
+    async def test_waf_blocked_403_with_waf_page(self):
+        """403 error with WAF page content should set waf_blocked=True."""
+        import httpx
+        waf_html = "function changePageElem(){ ... errorTip ... abnormal }"
+        url = "https://hikvision.com/reset?token=test"
+        with patch("hikresetpasswd.service.httpx.AsyncClient") as mock_client_class:
+            mock_response = MagicMock()
+            mock_response.status_code = 403
+            mock_response.text = waf_html
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(
+                side_effect=httpx.HTTPStatusError(
+                    "403", request=MagicMock(), response=mock_response
+                )
+            )
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_class.return_value = mock_client
+
+            result = await process_qr_content(url)
+            assert result.waf_blocked is True
