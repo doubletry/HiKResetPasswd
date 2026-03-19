@@ -153,10 +153,10 @@
     <div v-if="activeTab === 'sadp'" class="tab-content card">
       <h2>📋 SADP 设备特征文件</h2>
       <p class="description">
-        适用于新旧型号设备。在 SADP 工具中，点击"导出设备特征文件"按钮，将 XML 文件上传到此处。
-        系统将自动解析设备序列号和日期，生成重置密钥。<br />
-        Works for both old and new devices. In SADP, click "Export Device Characteristic File",
-        then upload the XML file here. The system will parse the serial number and date automatically.
+        在 SADP 工具中，点击"导出"按钮，将设备特征文件上传到此处。
+        系统将自动从文件中提取设备序列号，并使用今日日期生成重置密钥。<br />
+        In SADP, click "Export" to save the device characteristic file, then upload it here.
+        The system will extract the serial number and generate a key using today's date.
       </p>
 
       <!-- File Upload Area -->
@@ -171,7 +171,7 @@
         <input
           ref="sadpFileInput"
           type="file"
-          accept=".xml,.dat,.txt,text/xml,application/xml"
+          accept=".xml,.dat,.txt"
           style="display: none"
           @change="handleSadpFileChange"
         />
@@ -229,94 +229,38 @@
       </div>
     </div>
 
-    <!-- Offline Key Generation Tab (v1 + v2) -->
+    <!-- Offline Key Generation Tab -->
     <div v-if="activeTab === 'offline'" class="tab-content card">
       <h2>⚙️ 离线密钥生成</h2>
 
-      <!-- Sub-tabs: v1 vs v2 -->
-      <div class="sub-tabs">
-        <button
-          :class="['sub-tab-btn', { active: offlineMode === 'v1' }]"
-          @click="offlineMode = 'v1'"
-        >
-          旧设备 — 固件 &lt; 5.3.0
-        </button>
-        <button
-          :class="['sub-tab-btn', { active: offlineMode === 'v2' }]"
-          @click="offlineMode = 'v2'"
-        >
-          新设备 — 固件 ≥ 5.3.0（校验码）
-        </button>
+      <p class="description">
+        输入 SADP 中显示的设备序列号和设备当前日期，使用 MD5 离线算法生成重置密钥。<br />
+        对于新设备（固件 ≥ 5.3.0），建议优先使用"📋 设备文件"选项卡上传 SADP 导出的设备特征文件。<br />
+        Enter the serial number and device date shown in SADP. For newer devices (firmware ≥ 5.3.0),
+        we recommend using the "📋 Device File" tab to upload the SADP-exported characteristic file.
+      </p>
+      <div class="form-group">
+        <label>设备序列号 (Serial Number)</label>
+        <input
+          v-model="offlineSerial"
+          type="text"
+          placeholder="例如: DS-2CD2T45G0P-I20190101XXXX"
+          class="input"
+        />
       </div>
-
-      <!-- v1: serial + date -->
-      <div v-if="offlineMode === 'v1'">
-        <p class="description">
-          适用于较老型号设备（2017年以前，固件版本 &lt; 5.3.0）。<br />
-          需要提供设备序列号和 SADP 工具中显示的设备日期。<br />
-          For older devices (pre-2017, firmware &lt; 5.3.0). Requires serial number and device date from SADP.
-        </p>
-        <div class="form-group">
-          <label>设备序列号 (Serial Number)</label>
-          <input
-            v-model="offlineSerial"
-            type="text"
-            placeholder="例如: DS-2CD2T45G0P-I20190101XXXX"
-            class="input"
-          />
-        </div>
-        <div class="form-group">
-          <label>SADP 中显示的设备日期</label>
-          <input v-model="offlineDate" type="date" class="input" />
-        </div>
-        <div class="actions">
-          <button
-            class="btn btn-primary"
-            :disabled="!offlineSerial.trim() || !offlineDate || isLoading"
-            @click="generateOfflineKey"
-          >
-            <span v-if="isLoading" class="spinner">⟳</span>
-            <span v-else>🔑 生成密钥（v1）</span>
-          </button>
-        </div>
+      <div class="form-group">
+        <label>SADP 中显示的设备日期</label>
+        <input v-model="offlineDate" type="date" class="input" />
       </div>
-
-      <!-- v2: serial + verify code -->
-      <div v-if="offlineMode === 'v2'">
-        <p class="description">
-          适用于较新型号设备（固件版本 ≥ 5.3.0）。当 SADP 密码重置界面在二维码旁边显示一个
-          <strong>校验码（验证码）</strong>时使用此方式。<br />
-          For newer devices (firmware ≥ 5.3.0). Use this when SADP shows a
-          <strong>verify code</strong> alongside the QR code in the password reset screen.
-        </p>
-        <div class="form-group">
-          <label>设备序列号 (Serial Number)</label>
-          <input
-            v-model="offlineSerialV2"
-            type="text"
-            placeholder="例如: DS-2CD2T45G0P-I20190101XXXX"
-            class="input"
-          />
-        </div>
-        <div class="form-group">
-          <label>SADP 界面上显示的校验码 (Verify Code)</label>
-          <input
-            v-model="offlineVerifyCode"
-            type="text"
-            placeholder="例如: ABCD1234"
-            class="input"
-          />
-        </div>
-        <div class="actions">
-          <button
-            class="btn btn-primary"
-            :disabled="!offlineSerialV2.trim() || !offlineVerifyCode.trim() || isLoading"
-            @click="generateOfflineKeyV2"
-          >
-            <span v-if="isLoading" class="spinner">⟳</span>
-            <span v-else>🔑 生成密钥（v2）</span>
-          </button>
-        </div>
+      <div class="actions">
+        <button
+          class="btn btn-primary"
+          :disabled="!offlineSerial.trim() || !offlineDate || isLoading"
+          @click="generateOfflineKey"
+        >
+          <span v-if="isLoading" class="spinner">⟳</span>
+          <span v-else>🔑 生成密钥</span>
+        </button>
       </div>
     </div>
 
@@ -391,25 +335,22 @@
       <h3>📋 使用说明</h3>
       <ol>
         <li>在 SADP 工具中找到需要重置密码的摄像头</li>
-        <li>点击"忘记密码"，选择"二维码方式"</li>
+        <li>点击"忘记密码"，进入密码重置界面</li>
         <li>
-          <strong>推荐方式一（所有固件）：</strong> 使用"📋 SADP 设备文件"选项卡 → 在 SADP 中导出设备特征文件（XML）→ 上传到此处自动生成密钥<br />
-          <em>Works for both old and new firmware versions.</em>
+          <strong>推荐方式一（设备文件）：</strong> 在 SADP 中点击"导出"按钮 → 使用"📋 设备文件"选项卡上传设备特征文件 → 自动提取序列号生成密钥
         </li>
         <li>
-          <strong>方式二（新设备，固件 ≥ 5.3.0）：</strong> 使用"⚙️ 离线生成"→ 切换到"新设备"子标签 → 输入序列号和 SADP 显示的校验码<br />
-          <em>SADP shows a verify code alongside the QR code for newer firmware.</em>
+          <strong>方式二（离线生成）：</strong> 使用"⚙️ 离线生成"选项卡 → 输入 SADP 中显示的序列号和设备日期 → 生成密钥
         </li>
         <li>
-          <strong>方式三（屏幕/二维码截图）：</strong> 截图上传二维码图片，系统自动解码，若可联网则在线获取密钥，否则离线计算
+          <strong>方式三（屏幕/二维码截图）：</strong> 截图上传二维码图片，系统自动解码，尝试在线获取密钥或离线计算
         </li>
         <li>将密钥输入 SADP 的密钥输入框，设置新密码</li>
       </ol>
       <div class="note">
         <strong>⚠️ 注意：</strong>
-        旧设备（固件 &lt; 5.3.0）使用"序列号 + 日期"离线算法生成密钥。
-        新设备（固件 ≥ 5.3.0）需要导出 SADP 设备特征文件，或使用 SADP 显示的校验码。
-        如果服务器地址（在中国大陆）无法访问，请优先使用本地解析方式。
+        离线算法使用 MD5(序列号 + 日期) 生成密钥。
+        如果服务器地址（在中国大陆）无法访问，请优先使用"📋 设备文件"或"⚙️ 离线生成"方式。
       </div>
     </div>
   </div>
@@ -470,7 +411,6 @@ const sadpResults = ref<KeyResponse[]>([])
 const sadpFileError = ref<string | null>(null)
 
 // Offline tab
-const offlineMode = ref<'v1' | 'v2'>('v1')
 const offlineSerial = ref('')
 const offlineDate = ref((() => {
   const now = new Date()
@@ -479,8 +419,6 @@ const offlineDate = ref((() => {
   const d = String(now.getDate()).padStart(2, '0')
   return `${y}-${m}-${d}`
 })())
-const offlineSerialV2 = ref('')
-const offlineVerifyCode = ref('')
 
 // ─── Screen capture ──────────────────────────────────────────────────────────
 
@@ -802,29 +740,6 @@ async function generateOfflineKey() {
   }
 }
 
-async function generateOfflineKeyV2() {
-  if (!offlineSerialV2.value.trim() || !offlineVerifyCode.value.trim()) return
-  isLoading.value = true
-  result.value = null
-  try {
-    const response = await fetch(`${API_BASE}/api/key/offline/v2`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ serial: offlineSerialV2.value, verify_code: offlineVerifyCode.value }),
-    })
-    if (!response.ok) {
-      const err = await response.json()
-      result.value = { key: null, qr_content: null, method: null, error: err.detail || '生成失败', raw_response: null }
-      return
-    }
-    result.value = await response.json()
-  } catch (e) {
-    result.value = { key: null, qr_content: null, method: null, error: `网络错误: ${e}`, raw_response: null }
-  } finally {
-    isLoading.value = false
-  }
-}
-
 // ─── Utilities ───────────────────────────────────────────────────────────────
 
 async function copyKey(text: string) {
@@ -847,10 +762,9 @@ async function copyKey(text: string) {
 
 function methodLabel(method: string): string {
   const labels: Record<string, string> = {
-    offline_v1: '离线算法 v1（旧设备，序列号+日期）',
-    offline_v2: '离线算法 v2（新设备，序列号+校验码）',
+    offline_v1: '离线算法（序列号+日期）',
     offline_from_url: '离线算法（从 URL 提取序列号）',
-    offline_v1_from_file: '离线算法 v1（从 SADP 设备文件）',
+    offline_v1_from_file: '离线算法（从设备特征文件提取）',
     url_fetch: '在线获取（通过服务器）',
     url_fetch_via_redirect: '在线获取（通过重定向）',
     sadp_file: 'SADP 设备文件',
@@ -892,35 +806,6 @@ function methodLabel(method: string): string {
 .tab-btn.active {
   background: #d32f2f;
   color: white;
-}
-
-/* Sub-tabs for offline mode */
-.sub-tabs {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
-}
-
-.sub-tab-btn {
-  padding: 8px 16px;
-  border: 1px solid #bbb;
-  border-radius: 6px;
-  background: #f5f5f5;
-  color: #555;
-  font-size: 0.85rem;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.sub-tab-btn:hover {
-  background: #e0e0e0;
-}
-
-.sub-tab-btn.active {
-  background: #1565c0;
-  color: white;
-  border-color: #1565c0;
 }
 
 .card {

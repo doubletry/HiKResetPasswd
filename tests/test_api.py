@@ -221,53 +221,16 @@ async def test_spa_serving_with_dist(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_offline_key_v2(client):
-    """Test offline key generation v2 endpoint."""
-    response = await client.post(
-        "/api/key/offline/v2",
-        json={"serial": "DS-2CD2T45G0P-I", "verify_code": "ABCD1234"},
+async def test_sadp_upload_binary_file(client):
+    """Test uploading a real SADP binary device characteristic file."""
+    file_content = (
+        b"AwAAAJGP7B9KFhBeCOnsI9y5de4k74Nwt8bwgAhCuQErGh7yGFiknt9svKerzpOUXdmGiILu5jyY"
+        b"7vYrCProJv0HoyCKZjK/utHaQUFUHGMwFne9PK33vVMTKT3ixeMxjJzgl7dISNYzUb0J6y0MDXFDEUTh"
+        b"pNZd/vrQafK/rdL1zp2bDS-2CD3525FV3-IT20231211AACHAX8748548"
     )
-    assert response.status_code == 200
-    data = response.json()
-    assert data["key"] is not None
-    assert len(data["key"]) == 8
-    assert data["method"] == "offline_v2"
-
-
-@pytest.mark.asyncio
-async def test_offline_key_v2_empty_serial(client):
-    """Test v2 endpoint with empty serial."""
-    response = await client.post(
-        "/api/key/offline/v2",
-        json={"serial": "", "verify_code": "ABCD1234"},
-    )
-    assert response.status_code == 400
-
-
-@pytest.mark.asyncio
-async def test_offline_key_v2_empty_verify_code(client):
-    """Test v2 endpoint with empty verify code."""
-    response = await client.post(
-        "/api/key/offline/v2",
-        json={"serial": "DS-2CD2T45G0P-I", "verify_code": ""},
-    )
-    assert response.status_code == 400
-
-
-@pytest.mark.asyncio
-async def test_sadp_upload_valid_xml(client):
-    """Test uploading a valid SADP device characteristic XML."""
-    xml_content = b"""<?xml version="1.0" encoding="utf-8"?>
-<ProbeMatchList>
-  <ProbeMatch>
-    <DeviceSerial>DS-2CD2T45G0P-I20190101XXXX</DeviceSerial>
-    <BootTime>2024-03-15</BootTime>
-    <SoftwareVersion>V5.6.5</SoftwareVersion>
-  </ProbeMatch>
-</ProbeMatchList>"""
     response = await client.post(
         "/api/sadp/upload",
-        files={"file": ("devices.xml", xml_content, "text/xml")},
+        files={"file": ("AX8748548.xml", file_content, "application/octet-stream")},
     )
     assert response.status_code == 200
     data = response.json()
@@ -278,35 +241,25 @@ async def test_sadp_upload_valid_xml(client):
 
 
 @pytest.mark.asyncio
-async def test_sadp_upload_multi_device_xml(client):
-    """Test uploading SADP XML with multiple devices."""
-    xml_content = b"""<?xml version="1.0" encoding="utf-8"?>
-<ProbeMatchList>
-  <ProbeMatch>
-    <DeviceSerial>DS-2CD2T45G0P-I20190101AAA</DeviceSerial>
-    <BootTime>2024-03-15</BootTime>
-  </ProbeMatch>
-  <ProbeMatch>
-    <DeviceSerial>DS-7908HQH-SH20200101BBB</DeviceSerial>
-    <BootTime>2024-04-01</BootTime>
-  </ProbeMatch>
-</ProbeMatchList>"""
+async def test_sadp_upload_plain_serial_file(client):
+    """Test uploading a file with just a serial number."""
+    file_content = b"DS-7908HQH-SH20200101BBB"
     response = await client.post(
         "/api/sadp/upload",
-        files={"file": ("devices.xml", xml_content, "text/xml")},
+        files={"file": ("device.xml", file_content, "text/xml")},
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["count"] == 2
-    assert all(dev["key"] is not None for dev in data["devices"])
+    assert data["count"] == 1
+    assert data["devices"][0]["key"] is not None
 
 
 @pytest.mark.asyncio
-async def test_sadp_upload_invalid_xml(client):
-    """Test uploading invalid XML returns an error response."""
+async def test_sadp_upload_no_serial_returns_error(client):
+    """Test uploading file without serial number returns error."""
     response = await client.post(
         "/api/sadp/upload",
-        files={"file": ("bad.xml", b"not valid xml!!!<<>>", "text/xml")},
+        files={"file": ("bad.xml", b"no serial number here at all", "text/xml")},
     )
     assert response.status_code == 200
     data = response.json()

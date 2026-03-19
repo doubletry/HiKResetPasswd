@@ -10,7 +10,6 @@ from hikresetpasswd.service import (
     _find_redirect_urls,
     _looks_like_device_data,
     generate_key_offline,
-    generate_key_offline_v2,
     parse_sadp_device_file,
     process_qr_content,
     process_sadp_device_file,
@@ -417,153 +416,98 @@ class TestWeChatRedirectSupport:
 
 
 class TestParseSadpDeviceFile:
-    def test_parses_basic_xml(self):
-        xml = """<?xml version="1.0" encoding="utf-8"?>
-<ProbeMatchList>
-  <ProbeMatch>
-    <DeviceSerial>DS-2CD2T45G0P-I20190101XXXX</DeviceSerial>
-    <BootTime>2024-03-15</BootTime>
-    <SoftwareVersion>V5.6.5</SoftwareVersion>
-    <DeviceDescription>DS-2CD2T45G0P-I</DeviceDescription>
-    <IPv4Address>192.168.1.64</IPv4Address>
-  </ProbeMatch>
-</ProbeMatchList>"""
-        devices = parse_sadp_device_file(xml)
+    """Tests for parsing SADP binary device characteristic files."""
+
+    def test_parses_binary_file_with_serial(self):
+        """Should extract serial from binary file content (real format)."""
+        content = (
+            "AwAAAJGP7B9KFhBeCOnsI9y5de4k74Nwt8bwgAhCuQErGh7yGFiknt9svKerzpOUXdmGiILu5jyY"
+            "7vYrCProJv0HoyCKZjK/utHaQUFUHGMwFne9PK33vVMTKT3ixeMxjJzgl7dISNYzUb0J6y0MDXFDEUTh"
+            "pNZd/vrQafK/rdL1zp2bDS-2CD3525FV3-IT20231211AACHAX8748548"
+        )
+        devices = parse_sadp_device_file(content)
         assert len(devices) == 1
-        assert devices[0]["serial"] == "DS-2CD2T45G0P-I20190101XXXX"
-        assert devices[0]["date"] == "20240315"
-        assert devices[0]["version"] == "V5.6.5"
+        assert "DS-2CD3525FV3-IT20231211AACHAX8748548" in devices[0]["serial"]
 
-    def test_parses_multiple_devices(self):
-        xml = """<?xml version="1.0" encoding="utf-8"?>
-<ProbeMatchList>
-  <ProbeMatch>
-    <DeviceSerial>DS-2CD2T45G0P-I20190101AAA</DeviceSerial>
-    <BootTime>2024-03-15</BootTime>
-  </ProbeMatch>
-  <ProbeMatch>
-    <DeviceSerial>DS-7908HQH-SH20200101BBB</DeviceSerial>
-    <BootTime>2024-04-01</BootTime>
-  </ProbeMatch>
-</ProbeMatchList>"""
-        devices = parse_sadp_device_file(xml)
-        assert len(devices) == 2
-        assert devices[0]["serial"] == "DS-2CD2T45G0P-I20190101AAA"
-        assert devices[1]["serial"] == "DS-7908HQH-SH20200101BBB"
+    def test_parses_plain_serial(self):
+        """Should parse a file with just a serial number."""
+        content = "DS-7908HQH-SH20200101BBB"
+        devices = parse_sadp_device_file(content)
+        assert len(devices) == 1
+        assert devices[0]["serial"] == "DS-7908HQH-SH20200101BBB"
 
-    def test_no_device_serial_raises_error(self):
-        xml = """<ProbeMatchList><ProbeMatch><SoftwareVersion>V1.0</SoftwareVersion></ProbeMatch></ProbeMatchList>"""
-        with pytest.raises(ValueError, match="No device information"):
-            parse_sadp_device_file(xml)
+    def test_no_serial_raises_error(self):
+        """File with no device serial should raise ValueError."""
+        with pytest.raises(ValueError, match="No device serial"):
+            parse_sadp_device_file("random binary junk with no serial pattern")
 
-    def test_invalid_xml_raises_error(self):
-        with pytest.raises(ValueError, match="Invalid XML"):
-            parse_sadp_device_file("not xml at all!!!<<>>")
+    def test_empty_file_raises_error(self):
+        """Empty content should raise ValueError."""
+        with pytest.raises(ValueError, match="Empty file"):
+            parse_sadp_device_file("")
 
-    def test_empty_xml_raises_error(self):
-        with pytest.raises(ValueError):
-            parse_sadp_device_file("<ProbeMatchList></ProbeMatchList>")
+    def test_whitespace_only_raises_error(self):
+        """Whitespace-only content should raise ValueError."""
+        with pytest.raises(ValueError, match="Empty file"):
+            parse_sadp_device_file("   \n  ")
 
-    def test_date_without_hyphens(self):
-        xml = """<ProbeMatchList>
-  <ProbeMatch>
-    <DeviceSerial>DS-TEST12345</DeviceSerial>
-    <BootTime>20240315</BootTime>
-  </ProbeMatch>
-</ProbeMatchList>"""
-        devices = parse_sadp_device_file(xml)
-        assert devices[0]["date"] == "20240315"
+    def test_deduplicates_serials(self):
+        """Same serial repeated should be deduplicated."""
+        content = "prefix DS-TEST12345678 middle DS-TEST12345678 end"
+        devices = parse_sadp_device_file(content)
+        assert len(devices) == 1
 
-    def test_device_serial_tag_alternative(self):
-        xml = """<ProbeMatchList>
-  <ProbeMatch>
-    <SerialNumber>DS-TEST12345</SerialNumber>
-    <BootTime>2024-03-15</BootTime>
-  </ProbeMatch>
-</ProbeMatchList>"""
-        devices = parse_sadp_device_file(xml)
-        assert devices[0]["serial"] == "DS-TEST12345"
+    def test_ids_prefix_device(self):
+        """Should also match iDS- prefixed serials."""
+        content = "some binary data iDS-2CD7A46G0-HZSY20240101CCCC end"
+        devices = parse_sadp_device_file(content)
+        assert len(devices) == 1
+        assert devices[0]["serial"].startswith("iDS-")
 
 
 class TestProcessSadpDeviceFile:
     @pytest.mark.asyncio
-    async def test_generates_key_from_xml(self):
-        xml = """<?xml version="1.0" encoding="utf-8"?>
-<ProbeMatchList>
-  <ProbeMatch>
-    <DeviceSerial>DS-2CD2T45G0P-I20190101XXXX</DeviceSerial>
-    <BootTime>2024-03-15</BootTime>
-  </ProbeMatch>
-</ProbeMatchList>"""
-        results = await process_sadp_device_file(xml)
+    async def test_generates_key_from_binary_file(self):
+        """Should extract serial from binary file and generate key using today's date."""
+        content = (
+            "AwAAAJGP7B9KFhBeCOnsI9y5de4DS-2CD3525FV3-IT20231211AACHAX8748548"
+        )
+        results = await process_sadp_device_file(content)
         assert len(results) == 1
         assert results[0].key is not None
         assert len(results[0].key) == 8
         assert results[0].method == "offline_v1_from_file"
 
     @pytest.mark.asyncio
-    async def test_invalid_xml_returns_error_result(self):
-        results = await process_sadp_device_file("not valid xml")
+    async def test_no_serial_returns_error_result(self):
+        results = await process_sadp_device_file("no serial data here")
         assert len(results) == 1
         assert results[0].key is None
         assert results[0].error is not None
 
     @pytest.mark.asyncio
-    async def test_uses_today_date_when_no_boot_time(self):
-        xml = """<ProbeMatchList>
-  <ProbeMatch>
-    <DeviceSerial>DS-2CD2T45G0P-I20190101XXXX</DeviceSerial>
-  </ProbeMatch>
-</ProbeMatchList>"""
-        results = await process_sadp_device_file(xml)
-        assert results[0].key is not None
-        assert results[0].method == "offline_v1_from_file"
-
-
-class TestGenerateKeyOfflineV2:
-    @pytest.mark.asyncio
-    async def test_generates_key_from_serial_and_verify_code(self):
-        result = await generate_key_offline_v2("DS-2CD2T45G0P-I", "ABCD1234")
-        assert result.key is not None
-        assert len(result.key) == 8
-        assert result.method == "offline_v2"
-
-    @pytest.mark.asyncio
-    async def test_empty_serial_returns_error(self):
-        result = await generate_key_offline_v2("", "ABCD1234")
-        assert result.key is None
-        assert result.error is not None
-
-    @pytest.mark.asyncio
-    async def test_empty_verify_code_returns_error(self):
-        result = await generate_key_offline_v2("DS-2CD2T45G0P-I", "")
-        assert result.key is None
-        assert result.error is not None
+    async def test_empty_file_returns_error_result(self):
+        results = await process_sadp_device_file("")
+        assert len(results) == 1
+        assert results[0].key is None
 
 
 class TestSadpQrMultilineFormat:
     """Tests for the multi-line SADP QR code format parsing."""
 
     @pytest.mark.asyncio
-    async def test_qr_with_date_uses_v1(self):
+    async def test_qr_with_date_uses_offline(self):
         content = "B:DS-7908HQH-SH12345678\nDate:20240315"
         result = await process_qr_content(content)
         assert result.key is not None
         assert result.method == "offline_v1"
 
     @pytest.mark.asyncio
-    async def test_qr_with_verify_code_uses_v2(self):
-        content = "B:DS-7908HQH-SH12345678\nDate:20240315\nVerifyCode:ABCD1234"
+    async def test_qr_serial_only(self):
+        content = "B:DS-2CD2T45G0P-I12345"
         result = await process_qr_content(content)
         assert result.key is not None
-        assert result.method == "offline_v2"
-
-    @pytest.mark.asyncio
-    async def test_qr_verify_code_takes_priority_over_date(self):
-        """When both date and verify_code are present, v2 (verify_code) takes priority."""
-        content = "B:DS-2CD2T45G0P-I12345\nDate:20240315\nVerifyCode:TESTCODE"
-        result = await process_qr_content(content)
-        assert result.method == "offline_v2"
+        assert result.method == "offline_v1"
 
 
 class TestWeChat403ErrorMessages:
