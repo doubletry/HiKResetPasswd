@@ -551,13 +551,26 @@ async def _fetch_with_waf_retry(url: str, max_retries: int = 2) -> tuple[str, st
     Hikvision cloud WAF sets cookies on first visit; subsequent requests with
     those cookies are allowed through.
 
+    安全说明：此函数内部再次验证域名白名单，作为深度防御措施。
+    Security: Domain allowlist is re-checked here as a defense-in-depth measure.
+
     Args:
-        url: 要请求的 URL / URL to fetch
+        url: 要请求的 URL（必须属于白名单域名）/ URL to fetch (must be in allowlist)
         max_retries: 最大重试次数 / Maximum retry attempts
 
     Returns:
         (响应内容, 最终 URL) / (response content, final URL)
+
+    Raises:
+        ValueError: 域名不在白名单中 / If domain is not in allowlist
     """
+    # 深度防御：即使调用者已验证，此处再次检查域名白名单
+    # Defense-in-depth: re-validate domain even though caller already checked
+    parsed = urlparse(url)
+    hostname = parsed.hostname or ""
+    if not _is_allowed_domain(hostname):
+        raise ValueError(f"URL domain '{hostname}' is not in the allowed domain list")
+
     async with httpx.AsyncClient(
         timeout=30.0,
         headers={"User-Agent": MOBILE_UA},
