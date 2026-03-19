@@ -231,12 +231,13 @@ async def process_qr_content(qr_content: str) -> ResetKeyResult:
     处理已解码的 QR 内容并尝试获取重置密钥。
     Process the decoded QR code content and attempt to obtain a reset key.
 
-    QR 内容的几种可能形式 / QR content can be:
-      1. URL（http/https）→ 请求并提取密钥；若失败则尝试从 URL 参数离线生成
+    处理流程 / Processing flow:
+      1. 先尝试海康服务 API 自动提交 / First try Hikvision service API submission
+      2. URL（http/https）→ 请求并提取密钥；若失败则尝试从 URL 参数离线生成
          URL (http/https) → fetch and extract key; if that fails, try offline from URL params
-      2. 多行设备数据字符串（如 "B:DS-XXXX..."）→ 解析后尝试所有可用算法
-         Multi-line device data string (e.g. "B:DS-XXXX...") → parse and try all available algorithms
-      3. 其他内容 → 返回原始内容供用户手动处理
+      3. 多行设备数据字符串（如 "B:DS-XXXX..."）→ 解析后尝试离线算法
+         Multi-line device data string (e.g. "B:DS-XXXX...") → parse and try offline algorithm
+      4. 其他内容 → 返回原始内容供用户手动处理
          Other content → return raw content for manual processing
 
     Args:
@@ -254,11 +255,16 @@ async def process_qr_content(qr_content: str) -> ResetKeyResult:
     else:
         logger.info("Processing QR content: text (%d chars)", len(qr_content))
 
-    # 检查是否为 URL / Check if it's a URL
+    # 0. 先尝试海康服务 API / First try Hikvision service API
+    api_result = await _try_hikvision_service_api(qr_content)
+    if api_result is not None:
+        return api_result
+
+    # 1. 检查是否为 URL / Check if it's a URL
     if qr_content.startswith(("http://", "https://")):
         return await _process_url(qr_content)
 
-    # 检查是否为海康设备数据格式（如 "B:DS-7908HQH-SH..."）
+    # 2. 检查是否为海康设备数据格式（如 "B:DS-7908HQH-SH..."）
     # Check if it's Hikvision device data format (e.g. "B:DS-7908HQH-SH...")
     if _looks_like_device_data(qr_content):
         return _process_device_data(qr_content)
@@ -270,9 +276,71 @@ async def process_qr_content(qr_content: str) -> ResetKeyResult:
         error=(
             "QR code decoded successfully but could not automatically extract key. "
             "Please use the QR content to submit to Hikvision support manually, "
-            "or provide the serial number and date for offline key generation."
+            "or use the 'Offline Key Generation' tab with serial number and date."
         ),
     )
+
+
+# 海康服务 API 端点（用于自动提交 QR 数据获取密钥）
+# Hikvision service API endpoints (for automatic QR data submission to obtain key)
+_HIKVISION_SERVICE_ENDPOINTS = [
+    "https://open.hikvision.com/artemis/api/scpms/v1/password/reset/securityCode",
+    "https://appapi.hikvision.com/passwordReset/getSecurityCode",
+]
+
+
+async def _try_hikvision_service_api(qr_content: str) -> Optional[ResetKeyResult]:
+    """
+    尝试调用海康威视服务中心密码重置 API，自动提交 QR 数据获取密钥。
+    Try calling Hikvision's service center password reset API to obtain the key.
+
+    这是一个 best-effort 尝试：海康威视的精确 API 未公开文档化，
+    此函数尝试已知的端点格式。如果所有尝试都失败，返回 None 并回退到其他方法。
+    This is a best-effort attempt: Hikvision's exact API is not publicly documented.
+    This function tries known endpoint patterns. Returns None if all attempts fail.
+
+    Args:
+        qr_content: QR 码解码后的内容 / Decoded QR code content
+
+    Returns:
+        ResetKeyResult if a key was obtained, None otherwise
+    """
+    if not qr_content:
+        return None
+
+    for endpoint in _HIKVISION_SERVICE_ENDPOINTS:
+        try:
+            async with httpx.AsyncClient(
+                timeout=15.0,
+                headers={
+                    **_BROWSER_HEADERS,
+                    "Content-Type": "application/json",
+                },
+                follow_redirects=True,
+            ) as client:
+                response = await client.post(
+                    endpoint,
+                    json={"qrCode": qr_content, "content": qr_content},
+                )
+                response.raise_for_status()
+                content = response.text
+
+                key = _extract_key_from_response(content)
+                if key:
+                    logger.info(
+                        "Hikvision service API returned key via %s",
+                        endpoint.split("/")[-1],
+                    )
+                    return ResetKeyResult(
+                        key=key,
+                        qr_content=qr_content,
+                        method="hikvision_service_api",
+                    )
+        except Exception as exc:
+            logger.debug("Hikvision service API attempt failed for %s: %s", endpoint, exc)
+            continue
+
+    return None
 
 
 def _looks_like_device_data(content: str) -> bool:

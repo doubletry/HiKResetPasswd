@@ -11,6 +11,7 @@ from hikresetpasswd.service import (
     _find_redirect_urls,
     _is_waf_blocked,
     _looks_like_device_data,
+    _try_hikvision_service_api,
     generate_key_offline,
     parse_sadp_device_file,
     process_qr_content,
@@ -924,3 +925,62 @@ class TestNewDomainAllowlist:
                 mock_fetch.return_value = '{"key": "TESTKEY"}'
                 result = await process_qr_content(url)
                 assert result.key == "TESTKEY", f"Domain {domain} should be allowed"
+
+
+class TestHikvisionServiceApi:
+    """Tests for the Hikvision service API integration."""
+
+    @pytest.mark.asyncio
+    async def test_returns_key_on_success(self):
+        """Should return key when Hikvision API responds with a security code."""
+        with patch("hikresetpasswd.service.httpx.AsyncClient") as mock_client_class:
+            mock_response = MagicMock()
+            mock_response.text = '{"securityCode": "API_KEY_123"}'
+            mock_response.raise_for_status = MagicMock()
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_class.return_value = mock_client
+
+            result = await _try_hikvision_service_api("B:DS-7908HQH-SH12345678")
+            assert result is not None
+            assert result.key == "API_KEY_123"
+            assert result.method == "hikvision_service_api"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_on_failure(self):
+        """Should return None when all API endpoints fail."""
+        with patch("hikresetpasswd.service.httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(
+                side_effect=Exception("Connection refused")
+            )
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_class.return_value = mock_client
+
+            result = await _try_hikvision_service_api("B:DS-7908HQH-SH12345678")
+            assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_for_empty_content(self):
+        """Should return None for empty QR content."""
+        result = await _try_hikvision_service_api("")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_key_in_response(self):
+        """Should return None when API responds but no key is found."""
+        with patch("hikresetpasswd.service.httpx.AsyncClient") as mock_client_class:
+            mock_response = MagicMock()
+            mock_response.text = '{"status": "error", "message": "invalid request"}'
+            mock_response.raise_for_status = MagicMock()
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_class.return_value = mock_client
+
+            result = await _try_hikvision_service_api("some-qr-data")
+            assert result is None
