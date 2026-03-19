@@ -10,7 +10,10 @@ from hikresetpasswd.service import (
     _find_redirect_urls,
     _looks_like_device_data,
     generate_key_offline,
+    generate_key_offline_v2,
+    parse_sadp_device_file,
     process_qr_content,
+    process_sadp_device_file,
 )
 
 
@@ -405,3 +408,188 @@ class TestWeChatRedirectSupport:
             assert result.key == "WXKEY123"
             assert result.method == "url_fetch_via_redirect"
             assert call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Tests for SADP device characteristic file parsing
+# ---------------------------------------------------------------------------
+
+
+
+class TestParseSadpDeviceFile:
+    def test_parses_basic_xml(self):
+        xml = """<?xml version="1.0" encoding="utf-8"?>
+<ProbeMatchList>
+  <ProbeMatch>
+    <DeviceSerial>DS-2CD2T45G0P-I20190101XXXX</DeviceSerial>
+    <BootTime>2024-03-15</BootTime>
+    <SoftwareVersion>V5.6.5</SoftwareVersion>
+    <DeviceDescription>DS-2CD2T45G0P-I</DeviceDescription>
+    <IPv4Address>192.168.1.64</IPv4Address>
+  </ProbeMatch>
+</ProbeMatchList>"""
+        devices = parse_sadp_device_file(xml)
+        assert len(devices) == 1
+        assert devices[0]["serial"] == "DS-2CD2T45G0P-I20190101XXXX"
+        assert devices[0]["date"] == "20240315"
+        assert devices[0]["version"] == "V5.6.5"
+
+    def test_parses_multiple_devices(self):
+        xml = """<?xml version="1.0" encoding="utf-8"?>
+<ProbeMatchList>
+  <ProbeMatch>
+    <DeviceSerial>DS-2CD2T45G0P-I20190101AAA</DeviceSerial>
+    <BootTime>2024-03-15</BootTime>
+  </ProbeMatch>
+  <ProbeMatch>
+    <DeviceSerial>DS-7908HQH-SH20200101BBB</DeviceSerial>
+    <BootTime>2024-04-01</BootTime>
+  </ProbeMatch>
+</ProbeMatchList>"""
+        devices = parse_sadp_device_file(xml)
+        assert len(devices) == 2
+        assert devices[0]["serial"] == "DS-2CD2T45G0P-I20190101AAA"
+        assert devices[1]["serial"] == "DS-7908HQH-SH20200101BBB"
+
+    def test_no_device_serial_raises_error(self):
+        xml = """<ProbeMatchList><ProbeMatch><SoftwareVersion>V1.0</SoftwareVersion></ProbeMatch></ProbeMatchList>"""
+        with pytest.raises(ValueError, match="No device information"):
+            parse_sadp_device_file(xml)
+
+    def test_invalid_xml_raises_error(self):
+        with pytest.raises(ValueError, match="Invalid XML"):
+            parse_sadp_device_file("not xml at all!!!<<>>")
+
+    def test_empty_xml_raises_error(self):
+        with pytest.raises(ValueError):
+            parse_sadp_device_file("<ProbeMatchList></ProbeMatchList>")
+
+    def test_date_without_hyphens(self):
+        xml = """<ProbeMatchList>
+  <ProbeMatch>
+    <DeviceSerial>DS-TEST12345</DeviceSerial>
+    <BootTime>20240315</BootTime>
+  </ProbeMatch>
+</ProbeMatchList>"""
+        devices = parse_sadp_device_file(xml)
+        assert devices[0]["date"] == "20240315"
+
+    def test_device_serial_tag_alternative(self):
+        xml = """<ProbeMatchList>
+  <ProbeMatch>
+    <SerialNumber>DS-TEST12345</SerialNumber>
+    <BootTime>2024-03-15</BootTime>
+  </ProbeMatch>
+</ProbeMatchList>"""
+        devices = parse_sadp_device_file(xml)
+        assert devices[0]["serial"] == "DS-TEST12345"
+
+
+class TestProcessSadpDeviceFile:
+    @pytest.mark.asyncio
+    async def test_generates_key_from_xml(self):
+        xml = """<?xml version="1.0" encoding="utf-8"?>
+<ProbeMatchList>
+  <ProbeMatch>
+    <DeviceSerial>DS-2CD2T45G0P-I20190101XXXX</DeviceSerial>
+    <BootTime>2024-03-15</BootTime>
+  </ProbeMatch>
+</ProbeMatchList>"""
+        results = await process_sadp_device_file(xml)
+        assert len(results) == 1
+        assert results[0].key is not None
+        assert len(results[0].key) == 8
+        assert results[0].method == "offline_v1_from_file"
+
+    @pytest.mark.asyncio
+    async def test_invalid_xml_returns_error_result(self):
+        results = await process_sadp_device_file("not valid xml")
+        assert len(results) == 1
+        assert results[0].key is None
+        assert results[0].error is not None
+
+    @pytest.mark.asyncio
+    async def test_uses_today_date_when_no_boot_time(self):
+        xml = """<ProbeMatchList>
+  <ProbeMatch>
+    <DeviceSerial>DS-2CD2T45G0P-I20190101XXXX</DeviceSerial>
+  </ProbeMatch>
+</ProbeMatchList>"""
+        results = await process_sadp_device_file(xml)
+        assert results[0].key is not None
+        assert results[0].method == "offline_v1_from_file"
+
+
+class TestGenerateKeyOfflineV2:
+    @pytest.mark.asyncio
+    async def test_generates_key_from_serial_and_verify_code(self):
+        result = await generate_key_offline_v2("DS-2CD2T45G0P-I", "ABCD1234")
+        assert result.key is not None
+        assert len(result.key) == 8
+        assert result.method == "offline_v2"
+
+    @pytest.mark.asyncio
+    async def test_empty_serial_returns_error(self):
+        result = await generate_key_offline_v2("", "ABCD1234")
+        assert result.key is None
+        assert result.error is not None
+
+    @pytest.mark.asyncio
+    async def test_empty_verify_code_returns_error(self):
+        result = await generate_key_offline_v2("DS-2CD2T45G0P-I", "")
+        assert result.key is None
+        assert result.error is not None
+
+
+class TestSadpQrMultilineFormat:
+    """Tests for the multi-line SADP QR code format parsing."""
+
+    @pytest.mark.asyncio
+    async def test_qr_with_date_uses_v1(self):
+        content = "B:DS-7908HQH-SH12345678\nDate:20240315"
+        result = await process_qr_content(content)
+        assert result.key is not None
+        assert result.method == "offline_v1"
+
+    @pytest.mark.asyncio
+    async def test_qr_with_verify_code_uses_v2(self):
+        content = "B:DS-7908HQH-SH12345678\nDate:20240315\nVerifyCode:ABCD1234"
+        result = await process_qr_content(content)
+        assert result.key is not None
+        assert result.method == "offline_v2"
+
+    @pytest.mark.asyncio
+    async def test_qr_verify_code_takes_priority_over_date(self):
+        """When both date and verify_code are present, v2 (verify_code) takes priority."""
+        content = "B:DS-2CD2T45G0P-I12345\nDate:20240315\nVerifyCode:TESTCODE"
+        result = await process_qr_content(content)
+        assert result.method == "offline_v2"
+
+
+class TestWeChat403ErrorMessages:
+    """Verify that 403 errors no longer suggest using WeChat browser."""
+
+    @pytest.mark.asyncio
+    async def test_403_error_no_wechat_browser_suggestion(self):
+        """403 error message should guide to offline tab, not WeChat browser."""
+        import httpx
+        url = "https://hikvision.com/reset?token=opaquetoken"
+        with patch("hikresetpasswd.service.httpx.AsyncClient") as mock_client_class:
+            mock_response = MagicMock()
+            mock_response.status_code = 403
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(
+                side_effect=httpx.HTTPStatusError(
+                    "403", request=MagicMock(), response=mock_response
+                )
+            )
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_class.return_value = mock_client
+
+            result = await process_qr_content(url)
+            assert result.key is None
+            # Should NOT suggest "WeChat browser on mobile"
+            assert "WeChat browser on a mobile device in China" not in (result.error or "")
+            # Should guide to offline tab
+            assert "Offline Key Generation" in (result.error or "") or "offline" in (result.error or "").lower()

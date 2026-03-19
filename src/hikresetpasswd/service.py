@@ -10,9 +10,13 @@ Handles the business logic for obtaining reset keys from QR codes.
      QR code contains a URL → fetch it and parse the key
   2. QR 码包含设备原始数据 → 离线算法生成密钥
      QR code contains raw device data → offline algorithm
-  3. 直接提供序列号 + 日期 → 离线算法生成密钥
-     Direct serial number + date input → offline key generation
-  4. URL 包含序列号参数（如 SADP 导出的重置链接）→ 从 URL 参数提取序列号后离线生成
+  3. 直接提供序列号 + 日期 → 离线算法生成密钥（v1，旧设备）
+     Direct serial number + date input → offline key generation (v1, old devices)
+  4. 直接提供序列号 + 校验码 → 离线算法生成密钥（v2，新设备）
+     Direct serial number + verify code → offline key generation (v2, newer devices)
+  5. SADP 设备特征文件（XML）→ 解析序列号/日期后离线生成密钥
+     SADP device characteristic XML file → parse serial/date, generate key offline
+  6. URL 包含序列号参数（如 SADP 导出的重置链接）→ 从 URL 参数提取序列号后离线生成
      URL contains serial parameters (e.g. SADP reset link) → extract serial from URL params
 
 安全说明 / Security note:
@@ -26,13 +30,14 @@ import base64
 import json
 import logging
 import re
+import xml.etree.ElementTree as ET
 from datetime import date
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
 import httpx
 
-from .keygen import generate_key_from_serial_date, generate_key_v1
+from .keygen import generate_key_from_serial_date, generate_key_v1, generate_key_v2
 
 logger = logging.getLogger(__name__)
 
@@ -146,8 +151,8 @@ async def process_qr_content(qr_content: str) -> ResetKeyResult:
     QR 内容的几种可能形式 / QR content can be:
       1. URL（http/https）→ 请求并提取密钥；若失败则尝试从 URL 参数离线生成
          URL (http/https) → fetch and extract key; if that fails, try offline from URL params
-      2. 设备数据字符串（如 "B:DS-XXXX..."）→ 离线算法
-         Device data string (e.g. "B:DS-XXXX...") → offline algorithm
+      2. 多行设备数据字符串（如 "B:DS-XXXX..."）→ 解析后尝试所有可用算法
+         Multi-line device data string (e.g. "B:DS-XXXX...") → parse and try all available algorithms
       3. 其他内容 → 返回原始内容供用户手动处理
          Other content → return raw content for manual processing
 
@@ -201,41 +206,312 @@ def _looks_like_device_data(content: str) -> bool:
     return False
 
 
+def _parse_sadp_qr_fields(content: str) -> dict:
+    """
+    解析 SADP 导出的多行 QR 码数据，提取所有可用字段。
+    Parse the multi-line SADP QR code data and extract all available fields.
+
+    SADP 二维码可能包含如下格式 / SADP QR may contain formats like:
+      B:DS-7908HQH-SH12345678                   (old simple format)
+      B:DS-7908HQH-SH12345678\\r\\nDate:20240315  (with date)
+      B:DS-7908HQH-SH12345678\\r\\nDate:20240315\\r\\nVerifyCode:ABCD1234  (with verify code)
+
+    Returns:
+        字段字典，可包含 serial, date, verify_code 等键
+        Dict with extracted fields (serial, date, verify_code, etc.)
+    """
+    fields: dict = {}
+
+    # 规范化换行符（SADP 使用 \\r\\n 或 \\n）/ Normalize line endings
+    lines = re.split(r'[\r\n]+', content.strip())
+
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if not line:
+            continue
+
+        # 第一行通常是 "B:DS-..." 格式 / First line is usually "B:DS-..." format
+        if i == 0:
+            m = re.match(r'^[A-Z]?:?\s*(DS-[A-Z0-9\-]+)', line, re.IGNORECASE)
+            if m:
+                fields["serial"] = m.group(1)
+                continue
+            m = re.match(r'^(DS-[A-Z0-9\-]+)', line, re.IGNORECASE)
+            if m:
+                fields["serial"] = m.group(1)
+                continue
+
+        # 键值对格式（不区分大小写）/ Key-value pairs (case-insensitive)
+        kv = re.match(r'^([A-Za-z_]+)\s*[:=]\s*(.+)$', line)
+        if kv:
+            key = kv.group(1).lower().replace("_", "")
+            val = kv.group(2).strip()
+            if key in ("date", "devicedate", "resetdate", "time"):
+                fields["date"] = val.replace("-", "")
+            elif key in ("verifycode", "verifcode", "verificationcode", "safetycode", "safecode"):
+                fields["verify_code"] = val
+            elif key in ("sn", "serial", "serialnumber", "deviceserial"):
+                fields["serial"] = val
+            elif key == "version":
+                fields["version"] = val
+            elif key == "devicetype":
+                fields["device_type"] = val
+            continue
+
+        # 备用：在任意行中查找序列号 / Fallback: find serial in any line
+        if "serial" not in fields:
+            m = re.search(r'(DS-[A-Z0-9\-]+)', line, re.IGNORECASE)
+            if m:
+                fields["serial"] = m.group(1)
+
+        # 备用：在任意行中查找日期（8位数字）/ Fallback: find date in any line
+        if "date" not in fields:
+            m = re.search(r'(\d{8})', line)
+            if m:
+                fields["date"] = m.group(1)
+
+    return fields
+
+
 def _process_device_data(content: str) -> ResetKeyResult:
     """
     处理设备数据格式的 QR 内容，尝试提取序列号并生成密钥。
     Process device data format QR code content.
-    Tries to extract serial number and use the offline key generator.
-    """
-    # 从内容中提取序列号（格式："B:DS-7908HQH-SH..."）
-    # Extract serial number (format: "B:DS-7908HQH-SH...")
-    serial_match = re.search(r'(DS-[A-Z0-9\-]+)', content, re.IGNORECASE)
 
-    if serial_match:
-        serial = serial_match.group(1)
-        # 使用今天的日期（用户可在离线生成选项卡中调整）
-        # Use today's date (user can adjust in the offline generation tab)
-        today = date.today()
-        key = generate_key_v1(serial, today)
+    解析 SADP 多行格式，按以下优先级尝试生成密钥 / Parses SADP multi-line format,
+    tries key generation in this order:
+      1. 若含校验码（verify code）→ 使用 v2 算法 (MD5(serial + verify_code))
+         If verify code present → use v2 algorithm (MD5(serial + verify_code))
+      2. 若含日期 → 使用 v1 算法 (MD5(serial + date))
+         If date present → use v1 algorithm (MD5(serial + date))
+      3. 仅有序列号 → 使用今日日期 + v1 算法，并提示用户确认日期
+         Serial only → use today's date + v1, warn user to confirm date
+    """
+    fields = _parse_sadp_qr_fields(content)
+    serial = fields.get("serial")
+    verify_code = fields.get("verify_code")
+    date_str = fields.get("date")
+
+    # 兜底：直接从原始内容搜索序列号 / Fallback: search raw content
+    if not serial:
+        serial_match = re.search(r'(DS-[A-Z0-9\-]+)', content, re.IGNORECASE)
+        if serial_match:
+            serial = serial_match.group(1)
+
+    if not serial:
         return ResetKeyResult(
-            key=key,
             qr_content=content,
-            method="offline_v1",
+            method="raw",
             error=(
-                f"Generated key using offline algorithm for serial {serial} "
-                f"with date {today}. Note: This works for older firmware only. "
-                "If this doesn't work, please provide the exact device date shown in SADP."
+                "Device data format detected but could not extract serial number. "
+                "Please provide the serial number and date for offline key generation."
             ),
         )
 
+    # 1. 优先使用 v2 算法（校验码）/ Prefer v2 algorithm (verify code) if available
+    if verify_code:
+        key = generate_key_v2(serial, verify_code)
+        return ResetKeyResult(
+            key=key,
+            qr_content=content,
+            method="offline_v2",
+            error=(
+                f"Generated key using offline algorithm v2 for serial '{serial}' "
+                f"with verify code from QR data. "
+                "This works for devices with firmware >= 5.3.0."
+            ),
+        )
+
+    # 2. 使用 v1 算法（日期）/ Use v1 algorithm (date) if available
+    today = date.today()
+    if date_str:
+        try:
+            key = generate_key_from_serial_date(serial, date_str)
+            return ResetKeyResult(
+                key=key,
+                qr_content=content,
+                method="offline_v1",
+                error=(
+                    f"Generated key using offline algorithm v1 for serial '{serial}' "
+                    f"with date '{date_str}'. "
+                    "Note: If this key does not work, please confirm the exact device date "
+                    "shown in SADP, or try using the verify code if your SADP shows one."
+                ),
+            )
+        except ValueError:
+            pass
+
+    # 3. 仅序列号，使用今日日期 / Serial only, fall back to today's date
+    key = generate_key_v1(serial, today)
     return ResetKeyResult(
+        key=key,
         qr_content=content,
-        method="raw",
+        method="offline_v1",
         error=(
-            "Device data format detected but could not extract serial number. "
-            "Please provide the serial number and date for offline key generation."
+            f"Generated key using offline algorithm v1 for serial '{serial}' "
+            f"with today's date ({today}). "
+            "Note: This works for older firmware only. "
+            "If this key does not work, please provide the exact device date shown in SADP, "
+            "or use the 'Offline Key Generation' tab with the verify code if your device "
+            "shows one in SADP."
         ),
     )
+
+
+def parse_sadp_device_file(xml_content: str) -> list[dict]:
+    """
+    解析 SADP 导出的设备特征文件（XML 格式），提取设备信息。
+    Parse a SADP-exported device characteristic file (XML format) and extract device info.
+
+    SADP 导出的设备特征文件为 XML 格式，通常包含以下结构：
+    The SADP device characteristic file is XML with a structure like:
+      <ProbeMatchList>
+        <ProbeMatch>
+          <DeviceSerial>DS-2CD2T45G0P-I20190101XXXX</DeviceSerial>
+          <BootTime>2024-03-15</BootTime>
+          <SoftwareVersion>V5.6.5</SoftwareVersion>
+          ...
+        </ProbeMatch>
+      </ProbeMatchList>
+
+    Args:
+        xml_content: SADP 导出的 XML 文件内容 / Content of the SADP-exported XML file
+
+    Returns:
+        包含设备信息的字典列表（每台设备一条）
+        List of device info dicts, one per device found in the file.
+        Keys: serial, date, version, device_type, ip (all optional)
+
+    Raises:
+        ValueError: XML 格式无效或不包含设备信息时抛出
+                    If XML is invalid or contains no device info
+    """
+    try:
+        root = ET.fromstring(xml_content.strip())
+    except ET.ParseError as exc:
+        raise ValueError(f"Invalid XML file: {exc}") from exc
+
+    devices = []
+
+    # 支持两种常见根元素格式 / Support two common root element formats:
+    # <ProbeMatchList><ProbeMatch>... and <DeviceList><Device>...
+    probe_elements = (
+        root.findall(".//ProbeMatch")
+        or root.findall(".//Device")
+        or [root]  # 单设备文件 / single-device file
+    )
+
+    for probe in probe_elements:
+        info: dict = {}
+
+        # 序列号 / Serial number
+        for tag in ("DeviceSerial", "SerialNumber", "Serial", "SN"):
+            el = probe.find(tag)
+            if el is not None and el.text:
+                text = el.text.strip()
+                if re.match(r'DS-[A-Z0-9\-]+', text, re.IGNORECASE):
+                    info["serial"] = text
+                    break
+
+        # 日期（BootTime / 设备日期）/ Date (BootTime / device date)
+        for tag in ("BootTime", "DeviceDate", "Date", "ResetDate"):
+            el = probe.find(tag)
+            if el is not None and el.text:
+                text = el.text.strip().replace("-", "")
+                if len(text) == 8 and text.isdigit():
+                    info["date"] = text
+                    break
+
+        # 软件版本 / Software version
+        el = probe.find("SoftwareVersion")
+        if el is not None and el.text:
+            info["version"] = el.text.strip()
+
+        # 设备型号 / Device type / model
+        for tag in ("DeviceDescription", "DeviceType", "Model"):
+            el = probe.find(tag)
+            if el is not None and el.text:
+                info["device_type"] = el.text.strip()
+                break
+
+        # IP 地址 / IP address
+        for tag in ("IPv4Address", "IPAddress", "IP"):
+            el = probe.find(tag)
+            if el is not None and el.text:
+                info["ip"] = el.text.strip()
+                break
+
+        if info.get("serial"):
+            devices.append(info)
+
+    if not devices:
+        raise ValueError(
+            "No device information found in the file. "
+            "Please ensure this is a valid SADP device characteristic export (XML format)."
+        )
+
+    return devices
+
+
+async def process_sadp_device_file(xml_content: str) -> list["ResetKeyResult"]:
+    """
+    处理 SADP 设备特征文件，为每台设备生成重置密钥。
+    Process a SADP device characteristic XML file and generate a reset key for each device.
+
+    Args:
+        xml_content: SADP 导出的 XML 内容 / SADP-exported XML content
+
+    Returns:
+        每台设备对应一个 ResetKeyResult 的列表
+        List of ResetKeyResult, one per device
+    """
+    try:
+        devices = parse_sadp_device_file(xml_content)
+    except ValueError as exc:
+        return [ResetKeyResult(error=str(exc), method="sadp_file")]
+
+    results = []
+    for dev in devices:
+        serial = dev.get("serial", "")
+        date_str = dev.get("date")
+        version = dev.get("version", "")
+        today = date.today()
+
+        if date_str:
+            try:
+                key = generate_key_from_serial_date(serial, date_str)
+                results.append(ResetKeyResult(
+                    key=key,
+                    qr_content=f"Serial: {serial}, Date: {date_str}",
+                    method="offline_v1_from_file",
+                    error=(
+                        f"Generated key for serial '{serial}' using device date '{date_str}' "
+                        f"from SADP file. "
+                        + (f"Device firmware: {version}. " if version else "")
+                        + "Note: If this key does not work, confirm the device date in SADP "
+                        "matches the date in the exported file."
+                    ),
+                ))
+                continue
+            except ValueError:
+                pass
+
+        # 日期不可用，使用今日日期 / Date not available, use today's date
+        key = generate_key_v1(serial, today)
+        results.append(ResetKeyResult(
+            key=key,
+            qr_content=f"Serial: {serial}, Date: {today}",
+            method="offline_v1_from_file",
+            error=(
+                f"Generated key for serial '{serial}' using today's date ({today}) "
+                "(device date not found in file). "
+                + (f"Device firmware: {version}. " if version else "")
+                + "Note: If this key does not work, use the 'Offline Key Generation' tab "
+                "and enter the exact device date shown in SADP."
+            ),
+        ))
+
+    return results
 
 
 def _extract_serial_from_url(url: str) -> tuple[Optional[str], Optional[str]]:
@@ -450,35 +726,40 @@ async def _process_url(url: str) -> ResetKeyResult:
         if secondary_result is not None:
             return secondary_result
 
+        # 仍未获取到密钥：提示用户使用离线方式 / Still no key: guide to offline mode
+        offline = _try_offline_from_url(url)
+        if offline is not None:
+            return offline
+
         return ResetKeyResult(
             qr_content=url,
             method="url_fetch",
             error=(
-                "Fetched URL successfully but could not extract reset key from response. "
-                "The server may require WeChat authentication. "
-                "Try opening the URL in a WeChat browser on a mobile device."
+                "The Hikvision server was reached but no reset key was found in its response. "
+                "The key may require interactive WeChat authentication that cannot be automated. "
+                "Please try the 'Offline Key Generation' tab — enter the serial number and "
+                "device date shown in SADP."
             ),
             raw_response=content[:2000],
         )
 
     except httpx.HTTPStatusError as exc:
         status = exc.response.status_code
-        # 403 或其他 HTTP 错误：尝试从 URL 参数离线提取序列号
-        # 403 or other HTTP error: try offline extraction from URL params
+        # 403 或其他 HTTP 错误：先尝试从 URL 参数离线提取序列号
+        # 403 or other HTTP error: first try offline extraction from URL params
         offline = _try_offline_from_url(url)
         if offline is not None:
             return offline
-        hint = ""
-        if status == 403:
-            hint = (
-                " This may be due to geo-restrictions (China-only access) or "
-                "WeChat authentication requirements. "
-                "Try opening the URL directly in a WeChat browser on a mobile device in China."
-            )
         return ResetKeyResult(
             qr_content=url,
             method="url_fetch",
-            error=f"HTTP error {status} when fetching URL: {url}.{hint}",
+            error=(
+                f"HTTP {status} error when fetching the Hikvision reset URL. "
+                "The server could not be reached from this network (it may be restricted to "
+                "China/internal networks). "
+                "Please use the 'Offline Key Generation' tab: enter the serial number and "
+                "device date shown in SADP."
+            ),
         )
     except httpx.RequestError as exc:
         # 网络错误：尝试从 URL 参数离线提取序列号
@@ -489,7 +770,11 @@ async def _process_url(url: str) -> ResetKeyResult:
         return ResetKeyResult(
             qr_content=url,
             method="url_fetch",
-            error=f"Network error when fetching URL: {exc}",
+            error=(
+                f"Network error when fetching the Hikvision reset URL: {exc}. "
+                "Please use the 'Offline Key Generation' tab: enter the serial number and "
+                "device date shown in SADP."
+            ),
         )
 
 
@@ -611,8 +896,8 @@ def _extract_key_from_response(content: str) -> Optional[str]:
 
 async def generate_key_offline(serial: str, date_str: str) -> ResetKeyResult:
     """
-    使用离线算法生成重置密钥。
-    Generate a reset key using the offline algorithm.
+    使用离线算法 v1 生成重置密钥（序列号 + 日期）。
+    Generate a reset key using offline algorithm v1 (serial number + date).
 
     适用于旧型号海康设备（固件 < 5.3.0，2017 年以前）。
     Works for older Hikvision devices (firmware < 5.3.0, pre-2017).
@@ -637,3 +922,34 @@ async def generate_key_offline(serial: str, date_str: str) -> ResetKeyResult:
             error=str(exc),
             method="offline_v1",
         )
+
+
+async def generate_key_offline_v2(serial: str, verify_code: str) -> ResetKeyResult:
+    """
+    使用离线算法 v2 生成重置密钥（序列号 + 校验码）。
+    Generate a reset key using offline algorithm v2 (serial number + verify code).
+
+    适用于较新型号海康设备（固件 >= 5.3.0），当 SADP 工具在密码重置界面显示校验码时。
+    Works for newer Hikvision devices (firmware >= 5.3.0) when SADP shows a verify code
+    alongside the password reset QR code.
+
+    Args:
+        serial: SADP 中显示的设备序列号 / Device serial number from SADP
+        verify_code: SADP 界面显示的校验码 / The verify code shown in SADP interface
+
+    Returns:
+        包含生成密钥的 ResetKeyResult / ResetKeyResult with the generated key
+    """
+    serial = serial.strip()
+    verify_code = verify_code.strip()
+    if not serial:
+        return ResetKeyResult(error="Serial number cannot be empty.", method="offline_v2")
+    if not verify_code:
+        return ResetKeyResult(error="Verify code cannot be empty.", method="offline_v2")
+
+    key = generate_key_v2(serial, verify_code)
+    return ResetKeyResult(
+        key=key,
+        method="offline_v2",
+        qr_content=f"Serial: {serial}, VerifyCode: {verify_code}",
+    )

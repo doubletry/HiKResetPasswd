@@ -4,7 +4,7 @@ from datetime import date
 
 import pytest
 
-from hikresetpasswd.keygen import generate_key_from_serial_date, generate_key_v1
+from hikresetpasswd.keygen import generate_key_from_serial_date, generate_key_v1, generate_key_v2
 
 
 class TestGenerateKeyV1:
@@ -71,3 +71,36 @@ class TestGenerateKeyFromSerialDate:
         key_direct = generate_key_v1("DS-2CD2T45G0P-I", d(2024, 3, 15))
         key_from_str = generate_key_from_serial_date("DS-2CD2T45G0P-I", "20240315")
         assert key_direct == key_from_str
+
+
+class TestGenerateKeyV2:
+    def test_generates_8_char_uppercase_hex(self):
+        """v2 key should be 8 uppercase hex characters."""
+        key = generate_key_v2("DS-2CD2T45G0P-I", "ABCD1234")
+        assert len(key) == 8
+        assert all(c in "0123456789ABCDEF" for c in key)
+
+    def test_same_inputs_produce_same_key(self):
+        """Same serial + verify_code should always produce the same key."""
+        key1 = generate_key_v2("DS-2CD2T45G0P-I", "ABCD1234")
+        key2 = generate_key_v2("DS-2CD2T45G0P-I", "ABCD1234")
+        assert key1 == key2
+
+    def test_different_verify_codes_produce_different_keys(self):
+        """Different verify codes should produce different keys."""
+        key1 = generate_key_v2("DS-2CD2T45G0P-I", "ABCD1234")
+        key2 = generate_key_v2("DS-2CD2T45G0P-I", "EFGH5678")
+        assert key1 != key2
+
+    def test_v1_and_v2_produce_different_keys_for_different_inputs(self):
+        """v1 (date) and v2 (verify code) produce different keys when inputs differ."""
+        key_v1 = generate_key_v1("DS-2CD2T45G0P-I", date(2024, 3, 15))
+        key_v2 = generate_key_v2("DS-2CD2T45G0P-I", "ABCD1234")
+        # v1 uses serial+date string; v2 uses serial+verify_code — different data → different key
+        assert key_v1 != key_v2
+
+    def test_strips_whitespace_from_verify_code(self):
+        """Whitespace in verify_code should be stripped before hashing."""
+        key1 = generate_key_v2("DS-2CD2T45G0P-I", "ABCD1234")
+        key2 = generate_key_v2("DS-2CD2T45G0P-I", "  ABCD1234  ")
+        assert key1 == key2

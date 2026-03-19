@@ -149,39 +149,178 @@
       </div>
     </div>
 
-    <!-- Offline Key Generation Tab -->
-    <div v-if="activeTab === 'offline'" class="tab-content card">
-      <h2>⚙️ 离线密钥生成（旧设备）</h2>
+    <!-- SADP Device File Tab -->
+    <div v-if="activeTab === 'sadp'" class="tab-content card">
+      <h2>📋 SADP 设备特征文件</h2>
       <p class="description">
-        适用于较老型号设备（2017年以前，固件版本 &lt; 5.3.0）。<br />
-        需要提供设备序列号和 SADP 工具中显示的设备日期。
+        适用于新旧型号设备。在 SADP 工具中，点击"导出设备特征文件"按钮，将 XML 文件上传到此处。
+        系统将自动解析设备序列号和日期，生成重置密钥。<br />
+        Works for both old and new devices. In SADP, click "Export Device Characteristic File",
+        then upload the XML file here. The system will parse the serial number and date automatically.
       </p>
-      <div class="form-group">
-        <label>设备序列号 (Serial Number)</label>
+
+      <!-- File Upload Area -->
+      <div
+        class="upload-area"
+        :class="{ dragover: isSadpDragging }"
+        @click="triggerSadpFileInput"
+        @dragover.prevent="isSadpDragging = true"
+        @dragleave="isSadpDragging = false"
+        @drop.prevent="handleSadpDrop"
+      >
         <input
-          v-model="offlineSerial"
-          type="text"
-          placeholder="例如: DS-2CD2T45G0P-I20190101XXXX"
-          class="input"
+          ref="sadpFileInput"
+          type="file"
+          accept=".xml,.dat,.txt,text/xml,application/xml"
+          style="display: none"
+          @change="handleSadpFileChange"
         />
+        <div v-if="!sadpFileName" class="upload-placeholder">
+          <div class="upload-icon">📄</div>
+          <p>点击或拖拽 SADP 设备特征文件到此处</p>
+          <p class="hint">支持 .xml / .dat 格式（SADP 导出的设备特征文件）</p>
+        </div>
+        <div v-else class="sadp-file-info">
+          <div class="upload-icon">✅</div>
+          <p>{{ sadpFileName }}</p>
+          <p class="hint">文件已选择，点击下方按钮解析</p>
+        </div>
       </div>
-      <div class="form-group">
-        <label>SADP 中显示的设备日期</label>
-        <input v-model="offlineDate" type="date" class="input" />
-      </div>
+
+      <!-- Action Buttons -->
       <div class="actions">
         <button
           class="btn btn-primary"
-          :disabled="!offlineSerial.trim() || !offlineDate || isLoading"
-          @click="generateOfflineKey"
+          :disabled="!sadpFile || isLoading"
+          @click="uploadSadpFile"
         >
           <span v-if="isLoading" class="spinner">⟳</span>
-          <span v-else>🔑 生成密钥</span>
+          <span v-else>🔑 解析并生成密钥</span>
         </button>
+        <button v-if="sadpFile" class="btn btn-secondary" @click="clearSadpFile">
+          🗑️ 清除
+        </button>
+      </div>
+
+      <!-- Multi-device results -->
+      <div v-if="sadpResults.length > 0" class="sadp-results">
+        <h3>解析结果（共 {{ sadpResults.length }} 台设备）</h3>
+        <div
+          v-for="(dev, idx) in sadpResults"
+          :key="idx"
+          class="sadp-device-card"
+          :class="{ 'has-key': dev.key }"
+        >
+          <div class="sadp-device-header">
+            <span>{{ dev.key ? '✅' : '⚠️' }} 设备 {{ idx + 1 }}</span>
+            <span v-if="dev.qr_content" class="sadp-serial">{{ dev.qr_content }}</span>
+          </div>
+          <div v-if="dev.key" class="key-value-row">
+            <code class="key-value key-value-sm">{{ dev.key }}</code>
+            <button class="copy-btn" @click="copyKey(dev.key!)" :title="'复制密钥'">
+              {{ copied ? '✅ 已复制' : '📋 复制' }}
+            </button>
+          </div>
+          <p v-if="dev.error" class="sadp-device-note">{{ dev.error }}</p>
+        </div>
+      </div>
+      <div v-if="sadpFileError" class="sadp-error">
+        ❌ {{ sadpFileError }}
       </div>
     </div>
 
-    <!-- Result Display -->
+    <!-- Offline Key Generation Tab (v1 + v2) -->
+    <div v-if="activeTab === 'offline'" class="tab-content card">
+      <h2>⚙️ 离线密钥生成</h2>
+
+      <!-- Sub-tabs: v1 vs v2 -->
+      <div class="sub-tabs">
+        <button
+          :class="['sub-tab-btn', { active: offlineMode === 'v1' }]"
+          @click="offlineMode = 'v1'"
+        >
+          旧设备 — 固件 &lt; 5.3.0
+        </button>
+        <button
+          :class="['sub-tab-btn', { active: offlineMode === 'v2' }]"
+          @click="offlineMode = 'v2'"
+        >
+          新设备 — 固件 ≥ 5.3.0（校验码）
+        </button>
+      </div>
+
+      <!-- v1: serial + date -->
+      <div v-if="offlineMode === 'v1'">
+        <p class="description">
+          适用于较老型号设备（2017年以前，固件版本 &lt; 5.3.0）。<br />
+          需要提供设备序列号和 SADP 工具中显示的设备日期。<br />
+          For older devices (pre-2017, firmware &lt; 5.3.0). Requires serial number and device date from SADP.
+        </p>
+        <div class="form-group">
+          <label>设备序列号 (Serial Number)</label>
+          <input
+            v-model="offlineSerial"
+            type="text"
+            placeholder="例如: DS-2CD2T45G0P-I20190101XXXX"
+            class="input"
+          />
+        </div>
+        <div class="form-group">
+          <label>SADP 中显示的设备日期</label>
+          <input v-model="offlineDate" type="date" class="input" />
+        </div>
+        <div class="actions">
+          <button
+            class="btn btn-primary"
+            :disabled="!offlineSerial.trim() || !offlineDate || isLoading"
+            @click="generateOfflineKey"
+          >
+            <span v-if="isLoading" class="spinner">⟳</span>
+            <span v-else>🔑 生成密钥（v1）</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- v2: serial + verify code -->
+      <div v-if="offlineMode === 'v2'">
+        <p class="description">
+          适用于较新型号设备（固件版本 ≥ 5.3.0）。当 SADP 密码重置界面在二维码旁边显示一个
+          <strong>校验码（验证码）</strong>时使用此方式。<br />
+          For newer devices (firmware ≥ 5.3.0). Use this when SADP shows a
+          <strong>verify code</strong> alongside the QR code in the password reset screen.
+        </p>
+        <div class="form-group">
+          <label>设备序列号 (Serial Number)</label>
+          <input
+            v-model="offlineSerialV2"
+            type="text"
+            placeholder="例如: DS-2CD2T45G0P-I20190101XXXX"
+            class="input"
+          />
+        </div>
+        <div class="form-group">
+          <label>SADP 界面上显示的校验码 (Verify Code)</label>
+          <input
+            v-model="offlineVerifyCode"
+            type="text"
+            placeholder="例如: ABCD1234"
+            class="input"
+          />
+        </div>
+        <div class="actions">
+          <button
+            class="btn btn-primary"
+            :disabled="!offlineSerialV2.trim() || !offlineVerifyCode.trim() || isLoading"
+            @click="generateOfflineKeyV2"
+          >
+            <span v-if="isLoading" class="spinner">⟳</span>
+            <span v-else>🔑 生成密钥（v2）</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Result Display (single result) -->
     <div v-if="result" class="result-container">
       <!-- Success -->
       <div v-if="result.key" class="result-card success">
@@ -254,16 +393,23 @@
         <li>在 SADP 工具中找到需要重置密码的摄像头</li>
         <li>点击"忘记密码"，选择"二维码方式"</li>
         <li>
-          切换到"🖥️ 屏幕截图"选项卡 → 点击"开始截图" → 选择 SADP 窗口 → 自动捕获二维码<br />
-          <em>（或使用"📷 上传二维码"选项卡手动上传/粘贴截图）</em>
+          <strong>推荐方式一（所有固件）：</strong> 使用"📋 SADP 设备文件"选项卡 → 在 SADP 中导出设备特征文件（XML）→ 上传到此处自动生成密钥<br />
+          <em>Works for both old and new firmware versions.</em>
         </li>
-        <li>系统自动解码二维码并尝试获取重置密钥</li>
+        <li>
+          <strong>方式二（新设备，固件 ≥ 5.3.0）：</strong> 使用"⚙️ 离线生成"→ 切换到"新设备"子标签 → 输入序列号和 SADP 显示的校验码<br />
+          <em>SADP shows a verify code alongside the QR code for newer firmware.</em>
+        </li>
+        <li>
+          <strong>方式三（屏幕/二维码截图）：</strong> 截图上传二维码图片，系统自动解码，若可联网则在线获取密钥，否则离线计算
+        </li>
         <li>将密钥输入 SADP 的密钥输入框，设置新密码</li>
       </ol>
       <div class="note">
-        <strong>⚠️ 注意：</strong> 对于新型设备，密钥通过官方服务器获取。
-        如果二维码包含服务器地址，将自动请求获取密钥。
-        对于旧设备，请使用"离线密钥生成"选项卡。
+        <strong>⚠️ 注意：</strong>
+        旧设备（固件 &lt; 5.3.0）使用"序列号 + 日期"离线算法生成密钥。
+        新设备（固件 ≥ 5.3.0）需要导出 SADP 设备特征文件，或使用 SADP 显示的校验码。
+        如果服务器地址（在中国大陆）无法访问，请优先使用本地解析方式。
       </div>
     </div>
   </div>
@@ -280,6 +426,12 @@ interface KeyResponse {
   raw_response: string | null
 }
 
+interface SADPFileResponse {
+  devices: KeyResponse[]
+  count: number
+  error: string | null
+}
+
 // In dev, Vite proxies /api to the backend. In prod, set VITE_API_BASE_URL to empty string or backend URL.
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
 
@@ -287,6 +439,7 @@ const tabs = [
   { id: 'capture', label: '🖥️ 屏幕截图' },
   { id: 'qr', label: '📷 上传二维码' },
   { id: 'content', label: '📝 输入内容' },
+  { id: 'sadp', label: '📋 设备文件' },
   { id: 'offline', label: '⚙️ 离线生成' },
 ]
 const activeTab = ref('capture')
@@ -308,7 +461,16 @@ const fileInput = ref<HTMLInputElement | null>(null)
 // Content tab
 const qrContent = ref('')
 
+// SADP device file tab
+const sadpFile = ref<File | null>(null)
+const sadpFileName = ref<string | null>(null)
+const sadpFileInput = ref<HTMLInputElement | null>(null)
+const isSadpDragging = ref(false)
+const sadpResults = ref<KeyResponse[]>([])
+const sadpFileError = ref<string | null>(null)
+
 // Offline tab
+const offlineMode = ref<'v1' | 'v2'>('v1')
 const offlineSerial = ref('')
 const offlineDate = ref((() => {
   const now = new Date()
@@ -317,6 +479,8 @@ const offlineDate = ref((() => {
   const d = String(now.getDate()).padStart(2, '0')
   return `${y}-${m}-${d}`
 })())
+const offlineSerialV2 = ref('')
+const offlineVerifyCode = ref('')
 
 // ─── Screen capture ──────────────────────────────────────────────────────────
 
@@ -498,6 +662,74 @@ onUnmounted(() => {
   if (capturePreviewUrl.value) URL.revokeObjectURL(capturePreviewUrl.value)
 })
 
+// ─── SADP device file ─────────────────────────────────────────────────────────
+
+function triggerSadpFileInput() {
+  sadpFileInput.value?.click()
+}
+
+function handleSadpFileChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  if (input.files && input.files[0]) {
+    setSadpFile(input.files[0])
+  }
+}
+
+function handleSadpDrop(event: DragEvent) {
+  isSadpDragging.value = false
+  const files = event.dataTransfer?.files
+  if (files && files[0]) {
+    setSadpFile(files[0])
+  }
+}
+
+function setSadpFile(file: File) {
+  sadpFile.value = file
+  sadpFileName.value = file.name
+  sadpResults.value = []
+  sadpFileError.value = null
+  result.value = null
+}
+
+function clearSadpFile() {
+  sadpFile.value = null
+  sadpFileName.value = null
+  sadpResults.value = []
+  sadpFileError.value = null
+  if (sadpFileInput.value) sadpFileInput.value.value = ''
+}
+
+async function uploadSadpFile() {
+  if (!sadpFile.value) return
+  isLoading.value = true
+  sadpResults.value = []
+  sadpFileError.value = null
+  result.value = null
+  try {
+    const formData = new FormData()
+    formData.append('file', sadpFile.value)
+    const response = await fetch(`${API_BASE}/api/sadp/upload`, {
+      method: 'POST',
+      body: formData,
+    })
+    if (!response.ok) {
+      const err = await response.json()
+      sadpFileError.value = err.detail || '文件解析失败'
+      return
+    }
+    const data: SADPFileResponse = await response.json()
+    if (data.error) {
+      sadpFileError.value = data.error
+    } else {
+      sadpResults.value = data.devices
+    }
+  } catch (e) {
+    sadpFileError.value = `网络错误: ${e}`
+  } finally {
+    isLoading.value = false
+  }
+}
+
 // ─── API calls ───────────────────────────────────────────────────────────────
 
 async function uploadQrImage() {
@@ -570,6 +802,29 @@ async function generateOfflineKey() {
   }
 }
 
+async function generateOfflineKeyV2() {
+  if (!offlineSerialV2.value.trim() || !offlineVerifyCode.value.trim()) return
+  isLoading.value = true
+  result.value = null
+  try {
+    const response = await fetch(`${API_BASE}/api/key/offline/v2`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ serial: offlineSerialV2.value, verify_code: offlineVerifyCode.value }),
+    })
+    if (!response.ok) {
+      const err = await response.json()
+      result.value = { key: null, qr_content: null, method: null, error: err.detail || '生成失败', raw_response: null }
+      return
+    }
+    result.value = await response.json()
+  } catch (e) {
+    result.value = { key: null, qr_content: null, method: null, error: `网络错误: ${e}`, raw_response: null }
+  } finally {
+    isLoading.value = false
+  }
+}
+
 // ─── Utilities ───────────────────────────────────────────────────────────────
 
 async function copyKey(text: string) {
@@ -592,8 +847,13 @@ async function copyKey(text: string) {
 
 function methodLabel(method: string): string {
   const labels: Record<string, string> = {
-    offline_v1: '离线算法（旧设备）',
+    offline_v1: '离线算法 v1（旧设备，序列号+日期）',
+    offline_v2: '离线算法 v2（新设备，序列号+校验码）',
+    offline_from_url: '离线算法（从 URL 提取序列号）',
+    offline_v1_from_file: '离线算法 v1（从 SADP 设备文件）',
     url_fetch: '在线获取（通过服务器）',
+    url_fetch_via_redirect: '在线获取（通过重定向）',
+    sadp_file: 'SADP 设备文件',
     raw: '原始内容',
   }
   return labels[method] || method
@@ -632,6 +892,35 @@ function methodLabel(method: string): string {
 .tab-btn.active {
   background: #d32f2f;
   color: white;
+}
+
+/* Sub-tabs for offline mode */
+.sub-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.sub-tab-btn {
+  padding: 8px 16px;
+  border: 1px solid #bbb;
+  border-radius: 6px;
+  background: #f5f5f5;
+  color: #555;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.sub-tab-btn:hover {
+  background: #e0e0e0;
+}
+
+.sub-tab-btn.active {
+  background: #1565c0;
+  color: white;
+  border-color: #1565c0;
 }
 
 .card {
@@ -718,6 +1007,16 @@ function methodLabel(method: string): string {
   flex-direction: column;
   align-items: center;
   gap: 8px;
+}
+
+.sadp-file-info {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  color: #333;
+  font-size: 0.95rem;
+  font-weight: 500;
 }
 
 .upload-icon {
@@ -939,6 +1238,11 @@ kbd {
   border: 1px solid #e3e8ef;
 }
 
+.key-value-sm {
+  font-size: 1.4rem;
+  letter-spacing: 2px;
+}
+
 .copy-btn {
   padding: 8px 16px;
   background: #4caf50;
@@ -1031,6 +1335,63 @@ kbd {
   overflow-x: auto;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+/* ── SADP multi-device results ── */
+.sadp-results {
+  margin-top: 20px;
+}
+
+.sadp-results h3 {
+  font-size: 1rem;
+  margin-bottom: 12px;
+  color: #444;
+}
+
+.sadp-device-card {
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 14px;
+  margin-bottom: 12px;
+  background: #fafafa;
+}
+
+.sadp-device-card.has-key {
+  border-color: #4caf50;
+  background: #f0fff4;
+}
+
+.sadp-device-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.sadp-serial {
+  font-family: 'Courier New', monospace;
+  font-size: 0.8rem;
+  color: #555;
+  font-weight: normal;
+}
+
+.sadp-device-note {
+  margin-top: 8px;
+  font-size: 0.8rem;
+  color: #888;
+  line-height: 1.4;
+}
+
+.sadp-error {
+  margin-top: 16px;
+  padding: 12px 16px;
+  background: #fff5f5;
+  border: 1px solid #f44336;
+  border-radius: 8px;
+  color: #c62828;
+  font-size: 0.9rem;
 }
 
 .instructions {

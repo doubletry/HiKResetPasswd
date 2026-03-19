@@ -2,11 +2,14 @@
 海康威视密码重置密钥生成器
 Hikvision Password Reset Key Generator
 
-支持两种方式 / Supports two methods:
+支持三种方式 / Supports three methods:
   1. 旧设备离线算法（2017年前，固件 < 5.3.0）
      Offline algorithm for older devices (pre-2017, firmware < 5.3.0)
      使用序列号 + 日期进行 MD5 哈希 / Uses serial number + date with MD5 hash.
-  2. QR 码 URL 方式：QR 码包含可访问的服务器地址
+  2. 新设备离线算法 v2（固件 >= 5.3.0，SADP 显示校验码时）
+     Offline algorithm v2 for newer devices (firmware >= 5.3.0, when SADP shows verify code)
+     使用序列号 + 校验码进行 MD5 哈希 / Uses serial number + verify code with MD5 hash.
+  3. QR 码 URL 方式：QR 码包含可访问的服务器地址
      QR code URL method: QR code contains a URL to Hikvision's service.
 """
 
@@ -19,8 +22,8 @@ def generate_key_v1(serial: str, reset_date: date) -> str:
     为旧型号海康威视设备生成密码重置密钥。
     Generate a password reset key for older Hikvision devices.
 
-    此算法适用于旧版固件（2017 年以前）。
-    This algorithm is known to work for older firmware (pre-2017).
+    此算法适用于旧版固件（2017 年以前，固件 < 5.3.0）。
+    This algorithm works for older firmware (pre-2017, firmware < 5.3.0).
 
     算法：MD5(序列号 + 日期字符串) 取前 8 位十六进制大写
     Algorithm: MD5(serial + date_string) → first 8 hex chars (uppercase)
@@ -42,10 +45,37 @@ def generate_key_v1(serial: str, reset_date: date) -> str:
     return md5_hash[:8].upper()
 
 
+def generate_key_v2(serial: str, verify_code: str) -> str:
+    """
+    为较新型号海康威视设备（固件 >= 5.3.0）生成密码重置密钥。
+    Generate a password reset key for newer Hikvision devices (firmware >= 5.3.0).
+
+    适用场景：SADP 工具在显示二维码的同时，还展示了一个"校验码"（verify code / 验证码）。
+    Use case: SADP tool shows a "verify code" alongside the QR code for password reset.
+
+    算法：MD5(序列号 + 校验码) 取前 8 位十六进制大写
+    Algorithm: MD5(serial + verify_code) → first 8 hex chars (uppercase)
+
+    Args:
+        serial: 设备序列号（SADP 中显示的值）
+                Device serial number (as shown in SADP)
+        verify_code: SADP 界面上显示的校验码（通常为 8 位字母数字）
+                     The verify code shown in the SADP interface (usually 8 alphanumeric chars)
+
+    Returns:
+        8 位大写十六进制重置密钥 / 8-character uppercase hex reset key
+    """
+    # 去除校验码前后空白 / Strip whitespace from verify code
+    verify_code = verify_code.strip()
+    data = f"{serial}{verify_code}"
+    md5_hash = hashlib.md5(data.encode("utf-8")).hexdigest()
+    return md5_hash[:8].upper()
+
+
 def generate_key_from_serial_date(serial: str, date_str: str) -> str:
     """
-    根据序列号和日期字符串生成重置密钥。
-    Generate a password reset key given serial number and date string.
+    根据序列号和日期字符串生成重置密钥（v1 算法）。
+    Generate a password reset key given serial number and date string (v1 algorithm).
 
     Args:
         serial: 设备序列号 / Device serial number
