@@ -188,7 +188,7 @@ async def generate_offline_key(request: KeyRequest):
     使用离线算法 v1 生成重置密钥（适用于旧设备，固件 < 5.3.0）。
     Generate a reset key using the offline algorithm (serial number + date).
 
-    使用 MD5(序列号+日期) 离线算法生成重置密钥。
+    使用海康威视专有离线算法（序列号+日期）生成重置安全码。
     密钥仅对 SADP 中显示的特定日期有效。
     Note: The key is only valid for the specific date shown in SADP.
     """

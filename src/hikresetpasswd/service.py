@@ -276,8 +276,8 @@ def _process_device_data(content: str) -> ResetKeyResult:
 
     解析 SADP 多行格式，按以下优先级尝试生成密钥 / Parses SADP multi-line format,
     tries key generation in this order:
-      1. 若含日期 → 使用离线算法 (MD5(serial + date))
-         If date present → use offline algorithm (MD5(serial + date))
+      1. 若含日期 → 使用离线算法 (序列号 + 日期 → 安全码)
+         If date present → use offline algorithm (serial + date → security code)
       2. 仅有序列号 → 使用今日日期 + 离线算法，并提示用户确认日期
          Serial only → use today's date + offline algorithm, warn user to confirm date
     """

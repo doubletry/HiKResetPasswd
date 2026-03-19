@@ -234,7 +234,7 @@
       <h2>⚙️ 离线密钥生成</h2>
 
       <p class="description">
-        输入 SADP 中显示的设备序列号和设备当前日期，使用 MD5 离线算法生成重置密钥。<br />
+        输入 SADP 中显示的设备序列号和设备当前日期，离线生成重置安全码。<br />
         对于新设备（固件 ≥ 5.3.0），建议优先使用"📋 设备文件"选项卡上传 SADP 导出的设备特征文件。<br />
         Enter the serial number and device date shown in SADP. For newer devices (firmware ≥ 5.3.0),
         we recommend using the "📋 Device File" tab to upload the SADP-exported characteristic file.
@@ -349,7 +349,7 @@
       </ol>
       <div class="note">
         <strong>⚠️ 注意：</strong>
-        离线算法使用 MD5(序列号 + 日期) 生成密钥。
+        离线算法基于序列号和设备日期生成安全码（适用于旧固件设备，固件 &lt; 5.3.0）。
         如果服务器地址（在中国大陆）无法访问，请优先使用"📋 设备文件"或"⚙️ 离线生成"方式。
       </div>
     </div>

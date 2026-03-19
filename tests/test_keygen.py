@@ -6,13 +6,16 @@ import pytest
 
 from hikresetpasswd.keygen import generate_key_from_serial_date, generate_key_v1
 
+# 安全码中可能出现的字符集（0-9 数字映射后的结果）
+# Character set that can appear in security codes (mapped from digits 0-9)
+VALID_CODE_CHARS = set("QRSqrdey9z")
+
 
 class TestGenerateKeyV1:
-    def test_generates_8_char_hex_string(self):
-        """Key should be 8 uppercase hex characters."""
+    def test_generates_code_with_valid_chars(self):
+        """Code should only contain characters from the substitution table."""
         key = generate_key_v1("DS-2CD2T45G0P-I", date(2024, 3, 15))
-        assert len(key) == 8
-        assert all(c in "0123456789ABCDEF" for c in key)
+        assert all(c in VALID_CODE_CHARS for c in key)
 
     def test_same_inputs_produce_same_key(self):
         """Same serial + date should always produce the same key."""
@@ -32,22 +35,27 @@ class TestGenerateKeyV1:
         key2 = generate_key_v1("DS-7908HQH-SH", date(2024, 3, 15))
         assert key1 != key2
 
-    def test_key_is_uppercase(self):
-        """Key should be uppercase."""
-        key = generate_key_v1("DS-2CD2T45G0P-I", date(2024, 3, 15))
-        assert key == key.upper()
+    def test_known_value_matches_reference(self):
+        """
+        Cross-validate against the reference JS implementation
+        (github.com/mecko/hikvision-password-reset).
+        """
+        key = generate_key_from_serial_date(
+            "DS-2CD2142FWD-I20170718AAWRC22800338", "20240315"
+        )
+        assert key == "RSSQeRqeee"
 
 
 class TestGenerateKeyFromSerialDate:
     def test_yyyymmdd_format(self):
         """Should accept YYYYMMDD format."""
         key = generate_key_from_serial_date("DS-2CD2T45G0P-I", "20240315")
-        assert len(key) == 8
+        assert all(c in VALID_CODE_CHARS for c in key)
 
     def test_yyyy_mm_dd_format(self):
         """Should accept YYYY-MM-DD format."""
         key = generate_key_from_serial_date("DS-2CD2T45G0P-I", "2024-03-15")
-        assert len(key) == 8
+        assert all(c in VALID_CODE_CHARS for c in key)
 
     def test_both_formats_same_result(self):
         """Both date formats should produce the same key."""
