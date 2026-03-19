@@ -12,155 +12,19 @@
       </button>
     </div>
 
-    <!-- Device Discovery Tab -->
-    <div v-if="activeTab === 'discover'" class="tab-content card">
-      <h2>🔍 局域网设备发现 / LAN Device Discovery</h2>
-      <p class="description">
-        通过 SADP 协议自动发现局域网中的海康威视设备，获取序列号、固件版本和设备时间。<br />
-        <strong>解决无法获取设备时间的问题：</strong>自动扫描可获取设备启动时间，用于离线密钥生成。<br />
-        Automatically discover Hikvision devices on the LAN via SADP protocol, retrieving serial numbers,
-        firmware versions, and device time.<br />
-        <strong>Solves the "cannot get device time" problem:</strong> auto-scan retrieves boot time for offline key generation.
-      </p>
-      <div class="firmware-warning">
-        <strong>⚠️ 前置条件 / Prerequisites:</strong>
-        <ul>
-          <li>本工具需与海康设备在<strong>同一局域网</strong>内运行。
-              This tool must run on the <strong>same LAN</strong> as the Hikvision device.</li>
-          <li>UDP 端口 37020 不能被防火墙阻止。
-              UDP port 37020 must not be blocked by firewall.</li>
-          <li>自动检测固件版本，告知您是否可以使用离线重置。
-              Auto-detects firmware version and tells you if offline reset is available.</li>
-        </ul>
-      </div>
-
-      <div class="actions">
-        <button
-          class="btn btn-primary"
-          :disabled="isDiscovering"
-          @click="discoverDevices"
-        >
-          <span v-if="isDiscovering" class="spinner">⟳</span>
-          <span v-else>🔍 扫描局域网设备</span>
-        </button>
-      </div>
-
-      <!-- Discovered Devices List -->
-      <div v-if="discoveredDevices.length > 0" class="discovery-results">
-        <h3>发现 {{ discoveredDevices.length }} 台设备 / Found {{ discoveredDevices.length }} device(s)</h3>
-        <div
-          v-for="(dev, idx) in discoveredDevices"
-          :key="idx"
-          class="device-card"
-          :class="{ 'supports-offline': dev.supports_offline_reset, 'no-offline': !dev.supports_offline_reset }"
-        >
-          <div class="device-header">
-            <span class="device-badge" :class="dev.supports_offline_reset ? 'badge-success' : 'badge-warning'">
-              {{ dev.supports_offline_reset ? '✅ 支持离线重置' : '⚠️ 需官方渠道重置' }}
-            </span>
-          </div>
-          <table class="device-info-table">
-            <tr><td class="info-label">IP 地址</td><td>{{ dev.ip_address }}</td></tr>
-            <tr><td class="info-label">序列号</td><td><code>{{ dev.serial_number }}</code></td></tr>
-            <tr><td class="info-label">型号</td><td>{{ dev.device_description || '-' }}</td></tr>
-            <tr><td class="info-label">固件版本</td><td>{{ dev.software_version || '-' }}</td></tr>
-            <tr v-if="dev.boot_time"><td class="info-label">设备时间</td><td><strong>{{ dev.boot_time }}</strong></td></tr>
-            <tr v-if="dev.mac"><td class="info-label">MAC</td><td>{{ dev.mac }}</td></tr>
-          </table>
-          <p class="firmware-note">{{ dev.firmware_note }}</p>
-          <div class="device-actions">
-            <button
-              v-if="dev.supports_offline_reset"
-              class="btn btn-primary btn-sm"
-              @click="useDeviceForOfflineReset(dev)"
-            >
-              🔑 使用此设备信息生成离线密钥
-            </button>
-            <button class="btn btn-secondary btn-sm" @click="copyKey(dev.serial_number)">
-              📋 复制序列号
-            </button>
-          </div>
-          <!-- New firmware guidance (inline) -->
-          <div v-if="!dev.supports_offline_reset" class="new-firmware-guide">
-            <strong>新固件重置方法 / Reset Methods for New Firmware:</strong>
-            <ol>
-              <li><strong>微信扫码：</strong>在 SADP 中选择二维码方式 → 微信扫描 → 「海康威视客户服务」→ 密码重置</li>
-              <li><strong>导出设备文件：</strong>SADP 导出 → 发送给海康技术支持 → 收到 Encrypt.xml → SADP 导入</li>
-              <li><strong>电话：</strong>拨打 <strong>400-700-5998</strong></li>
-              <li><strong>Hik-Connect/萤石云：</strong>若设备已绑定，通过 APP「忘记密码」重置</li>
-            </ol>
-          </div>
-        </div>
-      </div>
-
-      <div v-if="discoveryError" class="discovery-error">
-        ⚠️ {{ discoveryError }}
-      </div>
-    </div>
-
-    <!-- Screen Capture Tab -->
-    <div v-if="activeTab === 'capture'" class="tab-content card">
-      <h2>🖥️ 屏幕截图 / Screen Capture</h2>
-      <p class="description">
-        直接截取屏幕上的二维码，无需外部截图工具。点击下方按钮，选择需要截图的窗口（如 SADP），
-        即可自动捕获二维码。<br />
-        Capture the QR code directly from any window (e.g. SADP) — no external screenshot tool needed.
-      </p>
-
-      <!-- Preview of captured frame -->
-      <div
-        class="capture-preview"
-        :class="{ empty: !capturePreviewUrl }"
-      >
-        <img
-          v-if="capturePreviewUrl"
-          :src="capturePreviewUrl"
-          alt="Captured screen"
-          class="preview-image"
-        />
-        <div v-else class="capture-placeholder">
-          <div class="capture-icon">🖥️</div>
-          <p>点击"开始截图"选择要截取的窗口</p>
-          <p class="hint">浏览器将请求屏幕捕获权限</p>
-        </div>
-      </div>
-
-      <!-- Action Buttons -->
-      <div class="actions">
-        <button
-          class="btn btn-capture"
-          :disabled="isCaptureLoading"
-          @click="startScreenCapture"
-        >
-          <span v-if="isCaptureLoading" class="spinner">⟳</span>
-          <span v-else>📸 开始截图</span>
-        </button>
-        <button
-          v-if="capturePreviewUrl"
-          class="btn btn-primary"
-          :disabled="!captureFile || isLoading"
-          @click="uploadCapturedImage"
-        >
-          <span v-if="isLoading" class="spinner">⟳</span>
-          <span v-else>🔍 解码并获取密钥</span>
-        </button>
-        <button v-if="capturePreviewUrl" class="btn btn-secondary" @click="clearCapture">
-          🗑️ 清除
-        </button>
-      </div>
-
-      <!-- Browser support note -->
-      <p class="hint" style="margin-top: 12px">
-        💡 需要支持 <code>getDisplayMedia</code> 的现代浏览器（Chrome / Edge / Firefox）
-        并在 HTTPS 或 localhost 下运行。
-      </p>
-    </div>
-
     <!-- QR Code Upload Tab -->
     <div v-if="activeTab === 'qr'" class="tab-content card">
       <h2>📷 上传二维码截图</h2>
       <p class="description">
-        在 SADP 工具中生成密码重置二维码后，截图并上传到此处。系统将自动解码并获取重置密钥。
+        上传 SADP 工具中生成的密码重置二维码截图。系统将自动解码二维码内容，
+        并尝试通过海康威视服务 API 自动获取重置密钥。<br />
+        Upload a screenshot of the password reset QR code from the SADP tool.
+        The system will decode the QR code and try to obtain the reset key
+        automatically via Hikvision's service API.<br /><br />
+        <strong>操作流程：</strong>海康威视客户服务 → 贴心服务 → 密码重置 → 使用小程序扫码 → 获取密钥。
+        本工具通过解码二维码并自动提交，帮助您快速获取密钥。<br />
+        <strong>Flow:</strong> Hikvision Customer Service → Service Support → Password Reset →
+        scan with mini-program → get key. This tool decodes the QR and auto-submits to help you get the key faster.
       </p>
 
       <!-- Drag & Drop / Click Upload Area -->
@@ -205,122 +69,6 @@
         <button v-if="selectedFile" class="btn btn-secondary" @click="clearImage">
           🗑️ 清除
         </button>
-      </div>
-    </div>
-
-    <!-- Manual Input Tab (QR Content) -->
-    <div v-if="activeTab === 'content'" class="tab-content card">
-      <h2>📝 输入二维码内容</h2>
-      <p class="description">
-        如果您已经通过其他方式解码了二维码，可以直接输入二维码的文本内容。
-      </p>
-      <div class="form-group">
-        <label>二维码内容</label>
-        <textarea
-          v-model="qrContent"
-          placeholder="例如: B:DS-7908HQH-SH**AwAAADQ3NDAyNzYxOCmhQkw= 或 https://..."
-          rows="4"
-          class="textarea"
-        ></textarea>
-      </div>
-      <div class="actions">
-        <button
-          class="btn btn-primary"
-          :disabled="!qrContent.trim() || isLoading"
-          @click="processQrContent"
-        >
-          <span v-if="isLoading" class="spinner">⟳</span>
-          <span v-else>🔍 处理并获取密钥</span>
-        </button>
-      </div>
-    </div>
-
-    <!-- SADP Device File Tab -->
-    <div v-if="activeTab === 'sadp'" class="tab-content card">
-      <h2>📋 SADP 设备特征文件</h2>
-      <p class="description">
-        在 SADP 工具中，点击"导出"按钮，将设备特征文件上传到此处。
-        系统将自动从文件中提取设备序列号，并尝试使用离线算法生成重置密钥。<br />
-        In SADP, click "Export" to save the device characteristic file, then upload it here.
-        The system will extract the serial number and attempt offline key generation.
-      </p>
-      <div class="firmware-warning">
-        <strong>⚠️ 重要提示 / Important:</strong>
-        <ul>
-          <li>离线算法<strong>仅适用于旧固件（&lt; 5.3.0）</strong>设备。
-              The offline algorithm <strong>ONLY works for older firmware (&lt; 5.3.0)</strong>.</li>
-          <li>新固件设备（≥ 5.3.0，如 v7.x）需将此文件发送给海康威视官方获取重置文件。
-              For newer firmware (≥ 5.3.0, e.g. v7.x), send this file to Hikvision support to get the unlock file.</li>
-        </ul>
-      </div>
-
-      <!-- File Upload Area -->
-      <div
-        class="upload-area"
-        :class="{ dragover: isSadpDragging }"
-        @click="triggerSadpFileInput"
-        @dragover.prevent="isSadpDragging = true"
-        @dragleave="isSadpDragging = false"
-        @drop.prevent="handleSadpDrop"
-      >
-        <input
-          ref="sadpFileInput"
-          type="file"
-          accept=".xml,.dat,.txt"
-          style="display: none"
-          @change="handleSadpFileChange"
-        />
-        <div v-if="!sadpFileName" class="upload-placeholder">
-          <div class="upload-icon">📄</div>
-          <p>点击或拖拽 SADP 设备特征文件到此处</p>
-          <p class="hint">支持 .xml / .dat 格式（SADP 导出的设备特征文件）</p>
-        </div>
-        <div v-else class="sadp-file-info">
-          <div class="upload-icon">✅</div>
-          <p>{{ sadpFileName }}</p>
-          <p class="hint">文件已选择，点击下方按钮解析</p>
-        </div>
-      </div>
-
-      <!-- Action Buttons -->
-      <div class="actions">
-        <button
-          class="btn btn-primary"
-          :disabled="!sadpFile || isLoading"
-          @click="uploadSadpFile"
-        >
-          <span v-if="isLoading" class="spinner">⟳</span>
-          <span v-else>🔑 解析并生成密钥</span>
-        </button>
-        <button v-if="sadpFile" class="btn btn-secondary" @click="clearSadpFile">
-          🗑️ 清除
-        </button>
-      </div>
-
-      <!-- Multi-device results -->
-      <div v-if="sadpResults.length > 0" class="sadp-results">
-        <h3>解析结果（共 {{ sadpResults.length }} 台设备）</h3>
-        <div
-          v-for="(dev, idx) in sadpResults"
-          :key="idx"
-          class="sadp-device-card"
-          :class="{ 'has-key': dev.key }"
-        >
-          <div class="sadp-device-header">
-            <span>{{ dev.key ? '✅' : '⚠️' }} 设备 {{ idx + 1 }}</span>
-            <span v-if="dev.qr_content" class="sadp-serial">{{ dev.qr_content }}</span>
-          </div>
-          <div v-if="dev.key" class="key-value-row">
-            <code class="key-value key-value-sm">{{ dev.key }}</code>
-            <button class="copy-btn" @click="copyKey(dev.key!)" :title="'复制密钥'">
-              {{ copied ? '✅ 已复制' : '📋 复制' }}
-            </button>
-          </div>
-          <p v-if="dev.error" class="sadp-device-note">{{ dev.error }}</p>
-        </div>
-      </div>
-      <div v-if="sadpFileError" class="sadp-error">
-        ❌ {{ sadpFileError }}
       </div>
     </div>
 
@@ -461,7 +209,7 @@
 
     <!-- Instructions -->
     <div class="instructions card">
-      <h3>📋 使用说明</h3>
+      <h3>�� 使用说明</h3>
 
       <h4>旧固件设备（&lt; 5.3.0，通常 2017 年以前出厂）</h4>
       <ol>
@@ -471,7 +219,7 @@
           <strong>方式一（离线生成）：</strong> 使用"⚙️ 离线生成"选项卡 → 输入 SADP 中显示的序列号和设备内部日期（重启设备后查看 Start Time 列）→ 生成安全码
         </li>
         <li>
-          <strong>方式二（二维码截图）：</strong> 截图上传二维码图片，系统自动解码，尝试在线获取密钥或离线计算
+          <strong>方式二（二维码截图）：</strong> 截图上传二维码图片，系统自动解码，尝试通过海康服务 API 获取密钥或离线计算
         </li>
         <li>将安全码输入 SADP 的安全码输入框（Serial Code / Security Code），设置新密码</li>
       </ol>
@@ -527,79 +275,23 @@ interface KeyResponse {
   waf_blocked: boolean
 }
 
-interface SADPFileResponse {
-  devices: KeyResponse[]
-  count: number
-  error: string | null
-}
-
-interface DiscoveredDevice {
-  ip_address: string
-  serial_number: string
-  device_description: string
-  software_version: string
-  dsp_version: string
-  boot_time: string
-  mac: string
-  subnet_mask: string
-  gateway: string
-  http_port: string
-  command_port: string
-  dhcp: string
-  analog_channels: string
-  digital_channels: string
-  supports_offline_reset: boolean
-  firmware_note: string
-}
-
-interface SADPDiscoveryResponse {
-  devices: DiscoveredDevice[]
-  count: number
-  error: string | null
-}
-
 // In dev, Vite proxies /api to the backend. In prod, set VITE_API_BASE_URL to empty string or backend URL.
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
 
 const tabs = [
-  { id: 'discover', label: '🔍 设备发现' },
-  { id: 'capture', label: '🖥️ 屏幕截图' },
   { id: 'qr', label: '📷 上传二维码' },
-  { id: 'content', label: '📝 输入内容' },
-  { id: 'sadp', label: '📋 设备文件' },
   { id: 'offline', label: '⚙️ 离线生成' },
 ]
-const activeTab = ref('discover')
+const activeTab = ref('qr')
 const isLoading = ref(false)
 const result = ref<KeyResponse | null>(null)
 const copied = ref(false)
-
-// Screen capture tab
-const capturePreviewUrl = ref<string | null>(null)
-const captureFile = ref<File | null>(null)
-const isCaptureLoading = ref(false)
 
 // QR Upload tab
 const selectedFile = ref<File | null>(null)
 const previewUrl = ref<string | null>(null)
 const isDragging = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
-
-// Content tab
-const qrContent = ref('')
-
-// SADP device file tab
-const sadpFile = ref<File | null>(null)
-const sadpFileName = ref<string | null>(null)
-const sadpFileInput = ref<HTMLInputElement | null>(null)
-const isSadpDragging = ref(false)
-const sadpResults = ref<KeyResponse[]>([])
-const sadpFileError = ref<string | null>(null)
-
-// Device discovery tab
-const discoveredDevices = ref<DiscoveredDevice[]>([])
-const isDiscovering = ref(false)
-const discoveryError = ref<string | null>(null)
 
 // Offline tab
 const offlineSerial = ref('')
@@ -610,132 +302,6 @@ const offlineDate = ref((() => {
   const d = String(now.getDate()).padStart(2, '0')
   return `${y}-${m}-${d}`
 })())
-
-// ─── Screen capture ──────────────────────────────────────────────────────────
-
-async function startScreenCapture() {
-  // Check API availability (requires HTTPS or localhost)
-  if (!navigator.mediaDevices?.getDisplayMedia) {
-    result.value = {
-      key: null,
-      qr_content: null,
-      method: null,
-      error: '浏览器不支持屏幕截图功能，请确保在 HTTPS 或 localhost 下使用，并使用 Chrome/Edge/Firefox 浏览器。',
-      raw_response: null,
-      waf_blocked: false,
-    }
-    return
-  }
-
-  isCaptureLoading.value = true
-  result.value = null
-  let stream: MediaStream | null = null
-
-  try {
-    // Ask user to pick a window/screen to share
-    // 请求用户选择要共享的窗口/屏幕
-    stream = await navigator.mediaDevices.getDisplayMedia({
-      video: { frameRate: 1 },
-      audio: false,
-    })
-
-    // Grab a single frame by drawing to an off-screen canvas
-    // 通过绘制到离屏 canvas 捕获单帧
-    const video = document.createElement('video')
-    video.srcObject = stream
-    // Wait for metadata + first renderable frame
-    await new Promise<void>((resolve) => {
-      video.onloadedmetadata = () => {
-        video.play().then(() => resolve()).catch(() => resolve())
-      }
-    })
-    // Small delay to make sure a frame is ready
-    await new Promise<void>((resolve) => setTimeout(resolve, 200))
-
-    const canvas = document.createElement('canvas')
-    canvas.width = video.videoWidth || 1280
-    canvas.height = video.videoHeight || 720
-    const ctx = canvas.getContext('2d')
-    if (!ctx) throw new Error('Cannot get canvas context')
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-
-    // Convert canvas to blob and then to a File object
-    // 将 canvas 转换为 Blob，再转换为 File 对象
-    const blob = await new Promise<Blob>((resolve, reject) =>
-      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('canvas.toBlob failed'))), 'image/png')
-    )
-    const file = new File([blob], 'screen_capture.png', { type: 'image/png' })
-
-    captureFile.value = file
-    // Revoke previous object URL to prevent memory leaks on repeated captures
-    if (capturePreviewUrl.value) {
-      URL.revokeObjectURL(capturePreviewUrl.value)
-    }
-    capturePreviewUrl.value = URL.createObjectURL(blob)
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err)
-    // User cancelled the picker — not a real error
-    // 用户取消了选择弹窗，不算错误
-    if (!msg.includes('Permission denied') && !msg.includes('cancelled') && !msg.includes('NotAllowedError')) {
-      result.value = {
-        key: null,
-        qr_content: null,
-        method: null,
-        error: `屏幕截图失败: ${msg}`,
-        raw_response: null,
-        waf_blocked: false,
-      }
-    }
-  } finally {
-    // Always stop the stream so the browser stops recording indicator
-    // 始终停止流，让浏览器结束录制提示
-    stream?.getTracks().forEach((t) => t.stop())
-    isCaptureLoading.value = false
-  }
-}
-
-function clearCapture() {
-  if (capturePreviewUrl.value) {
-    URL.revokeObjectURL(capturePreviewUrl.value)
-  }
-  capturePreviewUrl.value = null
-  captureFile.value = null
-  result.value = null
-}
-
-async function uploadCapturedImage() {
-  if (!captureFile.value) return
-  isLoading.value = true
-  result.value = null
-  try {
-    const formData = new FormData()
-    formData.append('file', captureFile.value)
-    const response = await fetch(`${API_BASE}/api/qr/upload`, {
-      method: 'POST',
-      body: formData,
-    })
-    if (!response.ok) {
-      const err = await response.json()
-      result.value = { key: null, qr_content: null, method: null, error: err.detail || '上传失败', raw_response: null, waf_blocked: false }
-      return
-    }
-    const data: KeyResponse = await response.json()
-
-    // 如果后端被 WAF 拦截且 QR 内容是 URL，尝试浏览器端直接获取
-    if (data.waf_blocked && data.qr_content?.startsWith('http')) {
-      const browserResult = await tryBrowserFetch(data.qr_content)
-      if (browserResult) {
-        result.value = browserResult
-        return
-      }
-    }
-    result.value = data
-  } catch (e) {
-    result.value = { key: null, qr_content: null, method: null, error: `网络错误: ${e}`, raw_response: null, waf_blocked: false }
-  } finally {
-    isLoading.value = false
-  }
-}
 
 // ─── File upload ─────────────────────────────────────────────────────────────
 
@@ -799,188 +365,9 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('paste', handlePaste)
-  // Clean up any object URLs
-  if (capturePreviewUrl.value) URL.revokeObjectURL(capturePreviewUrl.value)
 })
 
-// ─── Device discovery ─────────────────────────────────────────────────────────
-
-async function discoverDevices() {
-  isDiscovering.value = true
-  discoveredDevices.value = []
-  discoveryError.value = null
-  result.value = null
-  try {
-    const response = await fetch(`${API_BASE}/api/sadp/discover?timeout=5`, {
-      method: 'POST',
-    })
-    if (!response.ok) {
-      const err = await response.json()
-      discoveryError.value = err.detail || '设备发现失败 / Discovery failed'
-      return
-    }
-    const data: SADPDiscoveryResponse = await response.json()
-    if (data.error) {
-      discoveryError.value = data.error
-    }
-    discoveredDevices.value = data.devices
-    if (data.devices.length === 0 && !data.error) {
-      discoveryError.value = '未发现设备。请确保与海康设备在同一局域网内，且 UDP 端口 37020 未被防火墙阻止。'
-        + ' / No devices found. Ensure you are on the same LAN and UDP port 37020 is not blocked.'
-    }
-  } catch (e) {
-    discoveryError.value = `网络错误: ${e}`
-  } finally {
-    isDiscovering.value = false
-  }
-}
-
-function useDeviceForOfflineReset(device: DiscoveredDevice) {
-  // 从启动时间中提取日期 / Extract date from boot time
-  offlineSerial.value = device.serial_number
-  if (device.boot_time) {
-    // boot_time format: "2016-03-06 09:18:17" → extract date part
-    const dateMatch = device.boot_time.match(/(\d{4})-(\d{2})-(\d{2})/)
-    if (dateMatch) {
-      offlineDate.value = `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}`
-    }
-  }
-  activeTab.value = 'offline'
-}
-
-// ─── SADP device file ─────────────────────────────────────────────────────────
-
-function triggerSadpFileInput() {
-  sadpFileInput.value?.click()
-}
-
-function handleSadpFileChange(event: Event) {
-  const input = event.target as HTMLInputElement
-  if (input.files && input.files[0]) {
-    setSadpFile(input.files[0])
-  }
-}
-
-function handleSadpDrop(event: DragEvent) {
-  isSadpDragging.value = false
-  const files = event.dataTransfer?.files
-  if (files && files[0]) {
-    setSadpFile(files[0])
-  }
-}
-
-function setSadpFile(file: File) {
-  sadpFile.value = file
-  sadpFileName.value = file.name
-  sadpResults.value = []
-  sadpFileError.value = null
-  result.value = null
-}
-
-function clearSadpFile() {
-  sadpFile.value = null
-  sadpFileName.value = null
-  sadpResults.value = []
-  sadpFileError.value = null
-  if (sadpFileInput.value) sadpFileInput.value.value = ''
-}
-
-async function uploadSadpFile() {
-  if (!sadpFile.value) return
-  isLoading.value = true
-  sadpResults.value = []
-  sadpFileError.value = null
-  result.value = null
-  try {
-    const formData = new FormData()
-    formData.append('file', sadpFile.value)
-    const response = await fetch(`${API_BASE}/api/sadp/upload`, {
-      method: 'POST',
-      body: formData,
-    })
-    if (!response.ok) {
-      const err = await response.json()
-      sadpFileError.value = err.detail || '文件解析失败'
-      return
-    }
-    const data: SADPFileResponse = await response.json()
-    if (data.error) {
-      sadpFileError.value = data.error
-    } else {
-      sadpResults.value = data.devices
-    }
-  } catch (e) {
-    sadpFileError.value = `网络错误: ${e}`
-  } finally {
-    isLoading.value = false
-  }
-}
-
 // ─── API calls ───────────────────────────────────────────────────────────────
-
-// 海康威视密钥提取正则（与后端一致，用于浏览器端 URL 获取后解析）
-// Key extraction patterns (matching backend, for browser-side URL fetch parsing)
-const KEY_PATTERNS = [
-  /"key"\s*:\s*"([A-Za-z0-9-]{4,})"/,
-  /"securityCode"\s*:\s*"([A-Za-z0-9-]{4,})"/,
-  /"safeCode"\s*:\s*"([A-Za-z0-9-]{4,})"/,
-  /"resetCode"\s*:\s*"([A-Za-z0-9-]{4,})"/,
-  /"verifyCode"\s*:\s*"([A-Za-z0-9-]{4,})"/,
-  /"code"\s*:\s*"([A-Za-z0-9-]{4,})"/,
-  /安全码[：:]\s*([A-Za-z0-9-]{4,})/,
-  /重置口令[：:]\s*([A-Za-z0-9-]{4,})/,
-  /验证码[：:]\s*([0-9]{4,})/,
-]
-
-function extractKeyFromContent(content: string): string | null {
-  for (const pattern of KEY_PATTERNS) {
-    const match = content.match(pattern)
-    if (match && match[1] && match[1].length >= 4) {
-      return match[1]
-    }
-  }
-  return null
-}
-
-/**
- * 当后端被 WAF 拦截时，尝试通过浏览器直接获取 URL 内容。
- * When backend is WAF-blocked, try fetching the URL directly from the browser.
- * 浏览器具有真实的 TLS 指纹和 cookie 处理能力，可能通过 WAF 检测。
- * The browser has real TLS fingerprint and cookie handling that may pass WAF.
- * 注意：跨域请求可能被 CORS 阻止，此时回退到提示用户手动操作。
- * Note: Cross-origin requests may be blocked by CORS; falls back to manual guidance.
- */
-async function tryBrowserFetch(url: string): Promise<KeyResponse | null> {
-  try {
-    const resp = await fetch(url, {
-      mode: 'cors',
-      credentials: 'omit',
-      headers: { 'Accept': 'text/html,application/json,*/*' },
-    })
-    if (!resp.ok) return null
-    const text = await resp.text()
-
-    // 检查是否仍被 WAF 拦截 / Check if still WAF blocked
-    if (text.includes('changePageElem') || text.includes('abnormal')) {
-      return null
-    }
-
-    const key = extractKeyFromContent(text)
-    if (key) {
-      return {
-        key,
-        qr_content: url,
-        method: 'browser_fetch',
-        error: null,
-        raw_response: text.substring(0, 2000),
-        waf_blocked: false,
-      }
-    }
-  } catch {
-    // CORS or network error — expected for cross-origin requests
-  }
-  return null
-}
 
 async function uploadQrImage() {
   if (!selectedFile.value) return
@@ -998,52 +385,7 @@ async function uploadQrImage() {
       result.value = { key: null, qr_content: null, method: null, error: err.detail || '上传失败', raw_response: null, waf_blocked: false }
       return
     }
-    const data: KeyResponse = await response.json()
-
-    // 如果后端被 WAF 拦截且 QR 内容是 URL，尝试浏览器端直接获取
-    // If backend was WAF-blocked and QR content is a URL, try browser-side fetch
-    if (data.waf_blocked && data.qr_content?.startsWith('http')) {
-      const browserResult = await tryBrowserFetch(data.qr_content)
-      if (browserResult) {
-        result.value = browserResult
-        return
-      }
-    }
-    result.value = data
-  } catch (e) {
-    result.value = { key: null, qr_content: null, method: null, error: `网络错误: ${e}`, raw_response: null, waf_blocked: false }
-  } finally {
-    isLoading.value = false
-  }
-}
-
-async function processQrContent() {
-  if (!qrContent.value.trim()) return
-  isLoading.value = true
-  result.value = null
-  try {
-    const response = await fetch(`${API_BASE}/api/qr/content`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ qr_content: qrContent.value }),
-    })
-    if (!response.ok) {
-      const err = await response.json()
-      result.value = { key: null, qr_content: null, method: null, error: err.detail || '处理失败', raw_response: null, waf_blocked: false }
-      return
-    }
-    const data: KeyResponse = await response.json()
-
-    // 如果后端被 WAF 拦截且 QR 内容是 URL，尝试浏览器端直接获取
-    // If backend was WAF-blocked and QR content is a URL, try browser-side fetch
-    if (data.waf_blocked && data.qr_content?.startsWith('http')) {
-      const browserResult = await tryBrowserFetch(data.qr_content)
-      if (browserResult) {
-        result.value = browserResult
-        return
-      }
-    }
-    result.value = data
+    result.value = await response.json()
   } catch (e) {
     result.value = { key: null, qr_content: null, method: null, error: `网络错误: ${e}`, raw_response: null, waf_blocked: false }
   } finally {
@@ -1098,12 +440,9 @@ function methodLabel(method: string): string {
   const labels: Record<string, string> = {
     offline_v1: '离线算法（序列号+日期，仅旧固件 < 5.3.0）',
     offline_from_url: '离线算法（从 URL 提取，仅旧固件 < 5.3.0）',
-    offline_v1_from_file: '离线算法（从设备文件提取，仅旧固件 < 5.3.0）',
     url_fetch: '在线获取（通过服务器）',
     url_fetch_via_redirect: '在线获取（通过重定向）',
-    browser_fetch: '浏览器端直接获取（绕过 WAF）',
-    sadp_file: 'SADP 设备文件',
-    sadp_discovery: 'SADP 局域网设备发现',
+    hikvision_service_api: '海康服务 API（自动提交）',
     raw: '原始内容',
   }
   return labels[method] || method
@@ -1164,39 +503,6 @@ function methodLabel(method: string): string {
   line-height: 1.5;
 }
 
-/* ── Screen Capture ── */
-.capture-preview {
-  border: 2px dashed #ccc;
-  border-radius: 12px;
-  min-height: 150px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-  background: #fafafa;
-}
-
-.capture-preview:not(.empty) {
-  border-style: solid;
-  border-color: #d32f2f;
-  padding: 8px;
-}
-
-.capture-placeholder {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  padding: 24px;
-  color: #666;
-  font-size: 0.95rem;
-  text-align: center;
-}
-
-.capture-icon {
-  font-size: 2.5rem;
-}
-
 /* ── Upload area ── */
 .upload-area {
   border: 2px dashed #ccc;
@@ -1228,16 +534,6 @@ function methodLabel(method: string): string {
   flex-direction: column;
   align-items: center;
   gap: 8px;
-}
-
-.sadp-file-info {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  color: #333;
-  font-size: 0.95rem;
-  font-weight: 500;
 }
 
 .upload-icon {
@@ -1311,11 +607,6 @@ kbd {
   box-shadow: 0 0 0 3px rgba(211, 47, 47, 0.1);
 }
 
-.textarea {
-  resize: vertical;
-  min-height: 80px;
-}
-
 .actions {
   display: flex;
   gap: 12px;
@@ -1339,15 +630,6 @@ kbd {
 .btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-}
-
-.btn-capture {
-  background: #1565c0;
-  color: white;
-}
-
-.btn-capture:hover:not(:disabled) {
-  background: #0d47a1;
 }
 
 .btn-primary {
@@ -1459,11 +741,6 @@ kbd {
   border: 1px solid #e3e8ef;
 }
 
-.key-value-sm {
-  font-size: 1.4rem;
-  letter-spacing: 2px;
-}
-
 .copy-btn {
   padding: 8px 16px;
   background: #4caf50;
@@ -1558,63 +835,6 @@ kbd {
   word-break: break-all;
 }
 
-/* ── SADP multi-device results ── */
-.sadp-results {
-  margin-top: 20px;
-}
-
-.sadp-results h3 {
-  font-size: 1rem;
-  margin-bottom: 12px;
-  color: #444;
-}
-
-.sadp-device-card {
-  border: 1px solid #ddd;
-  border-radius: 8px;
-  padding: 14px;
-  margin-bottom: 12px;
-  background: #fafafa;
-}
-
-.sadp-device-card.has-key {
-  border-color: #4caf50;
-  background: #f0fff4;
-}
-
-.sadp-device-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
-  font-weight: 600;
-  font-size: 0.9rem;
-}
-
-.sadp-serial {
-  font-family: 'Courier New', monospace;
-  font-size: 0.8rem;
-  color: #555;
-  font-weight: normal;
-}
-
-.sadp-device-note {
-  margin-top: 8px;
-  font-size: 0.8rem;
-  color: #888;
-  line-height: 1.4;
-}
-
-.sadp-error {
-  margin-top: 16px;
-  padding: 12px 16px;
-  background: #fff5f5;
-  border: 1px solid #f44336;
-  border-radius: 8px;
-  color: #c62828;
-  font-size: 0.9rem;
-}
-
 .instructions {
   background: #fff9f0;
   border: 1px solid #ffe0b2;
@@ -1669,134 +889,6 @@ kbd {
 
 .firmware-warning li {
   margin-bottom: 4px;
-}
-
-/* ─── Device Discovery styles ─────────────────────────────────────────────── */
-
-.discovery-results {
-  margin-top: 20px;
-}
-
-.discovery-results h3 {
-  margin-bottom: 12px;
-  color: #333;
-}
-
-.device-card {
-  border: 2px solid #ddd;
-  border-radius: 12px;
-  padding: 16px;
-  margin-bottom: 16px;
-  background: #fafafa;
-  transition: border-color 0.2s;
-}
-
-.device-card.supports-offline {
-  border-color: #4caf50;
-  background: #f1f8e9;
-}
-
-.device-card.no-offline {
-  border-color: #ff9800;
-  background: #fff8e1;
-}
-
-.device-header {
-  margin-bottom: 12px;
-}
-
-.device-badge {
-  display: inline-block;
-  padding: 4px 12px;
-  border-radius: 16px;
-  font-size: 0.85rem;
-  font-weight: 600;
-}
-
-.badge-success {
-  background: #c8e6c9;
-  color: #2e7d32;
-}
-
-.badge-warning {
-  background: #ffe0b2;
-  color: #e65100;
-}
-
-.device-info-table {
-  width: 100%;
-  border-collapse: collapse;
-  margin-bottom: 12px;
-  font-size: 0.9rem;
-}
-
-.device-info-table td {
-  padding: 4px 8px;
-  border-bottom: 1px solid #eee;
-}
-
-.device-info-table .info-label {
-  font-weight: 600;
-  color: #555;
-  width: 120px;
-  white-space: nowrap;
-}
-
-.device-info-table code {
-  background: #e8eaf6;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 0.85rem;
-  word-break: break-all;
-}
-
-.firmware-note {
-  font-size: 0.82rem;
-  color: #666;
-  margin-bottom: 12px;
-  line-height: 1.5;
-}
-
-.device-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-bottom: 8px;
-}
-
-.btn-sm {
-  padding: 6px 14px !important;
-  font-size: 0.82rem !important;
-}
-
-.new-firmware-guide {
-  margin-top: 12px;
-  padding: 12px;
-  background: #fff3e0;
-  border-radius: 8px;
-  font-size: 0.82rem;
-  color: #bf360c;
-  line-height: 1.6;
-}
-
-.new-firmware-guide ol {
-  margin: 6px 0 0 0;
-  padding-left: 20px;
-}
-
-.new-firmware-guide li {
-  margin-bottom: 4px;
-}
-
-.discovery-error {
-  margin-top: 16px;
-  padding: 12px 16px;
-  background: #fff3e0;
-  border: 2px solid #ff9800;
-  border-radius: 8px;
-  color: #e65100;
-  font-size: 0.9rem;
-  line-height: 1.5;
 }
 
 /* ─── WAF block styles ──────────────────────────────────────────────────── */
