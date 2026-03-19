@@ -103,6 +103,21 @@ _WAF_SIGNATURES = [
     "Please try again later",
 ]
 
+# 需要跳过的静态资源文件扩展名（在 URL 提取时过滤掉这些资源链接）
+# File extensions to skip when extracting URLs (filter out static resource links)
+_EXCLUDED_RESOURCE_EXTENSIONS = (
+    ".css", ".js", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg",
+    ".woff", ".woff2", ".ttf", ".eot", ".map",
+)
+
+# 已知的微信域名（用于从 JS 响应中直接提取微信 URL）
+# Known WeChat domains (used for direct WeChat URL extraction from JS responses)
+_WECHAT_DOMAINS = (
+    "mp.weixin.qq.com",
+    "open.weixin.qq.com",
+    "weixin.qq.com",
+)
+
 # 从响应内容中提取密钥的正则表达式列表
 # Regex patterns for extracting keys from responses
 KEY_PATTERNS = [
@@ -669,7 +684,7 @@ def _find_redirect_urls(content: str) -> list[str]:
             url = m.group(1).strip()
             # 排除明显不是目标的 URL（如 CSS/JS/图片资源）
             # Exclude obviously non-target URLs (CSS/JS/image resources)
-            if re.search(r'\.(css|js|png|jpg|jpeg|gif|ico|svg|woff|ttf)(\?|$)', url, re.IGNORECASE):
+            if any(url.lower().endswith(ext) or (ext + "?") in url.lower() for ext in _EXCLUDED_RESOURCE_EXTENSIONS):
                 continue
             if url not in seen:
                 seen.add(url)
@@ -679,7 +694,8 @@ def _find_redirect_urls(content: str) -> list[str]:
     # Extract complete URLs from JS string concatenation (common in Hikvision pages)
     # e.g.: var url = "https://mp.weixin.qq.com/" + "xxx" + "/yyy"
     # We do a broad scan for any https URL fragments in the content
-    for m in re.finditer(r'(https?://(?:mp\.weixin\.qq\.com|open\.weixin\.qq\.com|weixin\.qq\.com)[^\s"\'<>\\]{5,})', content):
+    wechat_domain_pattern = "|".join(re.escape(d) for d in _WECHAT_DOMAINS)
+    for m in re.finditer(rf'(https?://(?:{wechat_domain_pattern})[^\s"\'<>\\]{{5,}})', content):
         url = m.group(1).strip().rstrip('\\')
         if url not in seen:
             seen.add(url)
