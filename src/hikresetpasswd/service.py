@@ -9,20 +9,26 @@ Handles the business logic for obtaining reset keys from QR codes.
   1. QR 码包含 URL → 请求该 URL 并解析密钥
      QR code contains a URL → fetch it and parse the key
   2. QR 码包含设备原始数据 → 离线算法生成密钥
-     QR code contains raw device data → offline key generation
+     QR code contains raw device data → offline algorithm
   3. 直接提供序列号 + 日期 → 离线算法生成密钥
      Direct serial number + date input → offline key generation
+  4. URL 包含序列号参数（如 SADP 导出的重置链接）→ 从 URL 参数提取序列号后离线生成
+     URL contains serial parameters (e.g. SADP reset link) → extract serial from URL params
 
 安全说明 / Security note:
-  为防止 SSRF 攻击，URL 请求仅限于已知的海康威视域名白名单。
-  To prevent SSRF, URL fetching is restricted to a Hikvision domain allowlist.
+  为防止 SSRF 攻击，URL 请求仅限于已知的海康威视域名白名单（含微信域名，
+  用于跟踪海康威视在国内通过微信公众号分发密钥的重定向链路）。
+  To prevent SSRF, URL fetching is restricted to a Hikvision/WeChat domain allowlist.
+  WeChat domains are included because Hikvision's reset process in China redirects through WeChat.
 """
 
+import base64
+import json
 import logging
 import re
 from datetime import date
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 
@@ -31,13 +37,17 @@ from .keygen import generate_key_from_serial_date, generate_key_v1
 logger = logging.getLogger(__name__)
 
 # 已知的海康威视服务域名白名单
-# Known Hikvision service domain allowlist
+# 微信域名（weixin.qq.com）已加入白名单，因为海康威视在中国通过微信公众号重定向分发密钥。
+# Known Hikvision service domain allowlist.
+# WeChat (weixin.qq.com) is included because Hikvision's password reset process in China
+# redirects through WeChat official accounts for key delivery.
 HIKVISION_DOMAINS = [
     "hikvision.com",
     "hikconnect.com",
     "hik-connect.com",
     "lechange.com",
     "ezviz.com",
+    "weixin.qq.com",  # WeChat — used by Hikvision for key distribution in China / 微信公众号密钥分发
 ]
 
 # 模拟移动端浏览器（微信风格）的 User-Agent
@@ -60,6 +70,43 @@ KEY_PATTERNS = [
     r'安全码[：:]\s*([A-Za-z0-9\-]{4,})',
     r'重置口令[：:]\s*([A-Za-z0-9\-]{4,})',
     r'验证码[：:]\s*([0-9]{4,})',
+]
+
+# URL 查询参数中可能包含设备序列号的参数名
+# URL query parameter names that may contain a device serial number
+_SERIAL_PARAM_NAMES = [
+    "sn",
+    "serialNumber",
+    "deviceSerial",
+    "serial",
+    "device",
+    "deviceSn",
+    "device_serial",
+    "deviceno",
+    "devicesn",
+    "deviceNum",
+]
+
+# URL 查询参数中可能包含日期的参数名
+# URL query parameter names that may contain a device date
+_DATE_PARAM_NAMES = [
+    "date",
+    "time",
+    "startTime",
+    "deviceDate",
+    "device_date",
+    "resetDate",
+    "createTime",
+]
+
+# HTML/JS 响应中可能包含二级跳转 URL 的正则表达式
+# Regex patterns for finding secondary redirect URLs inside HTML/JS responses
+_SECONDARY_URL_PATTERNS = [
+    r'href=["\']+(https?://[^\s"\'<>]{10,})',
+    r'"url"\s*:\s*"(https?://[^"]{10,})"',
+    r"'url'\s*:\s*'(https?://[^']{10,})'",
+    r'window\.location(?:\.href)?\s*=\s*["\']+(https?://[^"\']{10,})',
+    r'location\.replace\(["\']+(https?://[^"\']{10,})',
 ]
 
 
@@ -97,8 +144,8 @@ async def process_qr_content(qr_content: str) -> ResetKeyResult:
     Process the decoded QR code content and attempt to obtain a reset key.
 
     QR 内容的几种可能形式 / QR content can be:
-      1. URL（http/https）→ 请求并提取密钥
-         URL (http/https) → fetch and extract key
+      1. URL（http/https）→ 请求并提取密钥；若失败则尝试从 URL 参数离线生成
+         URL (http/https) → fetch and extract key; if that fails, try offline from URL params
       2. 设备数据字符串（如 "B:DS-XXXX..."）→ 离线算法
          Device data string (e.g. "B:DS-XXXX...") → offline algorithm
       3. 其他内容 → 返回原始内容供用户手动处理
@@ -191,13 +238,161 @@ def _process_device_data(content: str) -> ResetKeyResult:
     )
 
 
+def _extract_serial_from_url(url: str) -> tuple[Optional[str], Optional[str]]:
+    """
+    从 URL 查询参数中尝试提取设备序列号和日期。
+    Try to extract the device serial number and date from a URL's query parameters.
+
+    处理以下 SADP 导出 URL 格式 / Handles common SADP export URL formats:
+      - ?sn=DS-XXXX&date=YYYYMMDD  (直接参数 / plain parameters)
+      - ?data=BASE64({"sn":"DS-XXXX","date":"YYYYMMDD"})  (base64 编码 JSON / base64-encoded JSON)
+      - URL 路径中包含序列号 / Serial number embedded in URL path
+
+    Args:
+        url: The URL string to parse
+
+    Returns:
+        (serial, date_str) tuple; either value may be None if not found.
+        date_str is in YYYYMMDD format when found.
+    """
+    try:
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query, keep_blank_values=False)
+
+        serial: Optional[str] = None
+        date_str: Optional[str] = None
+
+        # ------------------------------------------------------------------
+        # 1. 在已知参数名中查找序列号 / Look for serial in known param names
+        # ------------------------------------------------------------------
+        for name in _SERIAL_PARAM_NAMES:
+            # parse_qs is case-sensitive; try original, lower, and upper
+            for variant in (name, name.lower(), name.upper()):
+                for v in params.get(variant, []):
+                    if re.match(r'^DS-[A-Z0-9\-]+', v, re.IGNORECASE):
+                        serial = v
+                        break
+                if serial:
+                    break
+            if serial:
+                break
+
+        # ------------------------------------------------------------------
+        # 2. 在已知参数名中查找日期 / Look for date in known param names
+        # ------------------------------------------------------------------
+        for name in _DATE_PARAM_NAMES:
+            for variant in (name, name.lower(), name.upper()):
+                for v in params.get(variant, []):
+                    v_clean = v.replace("-", "")
+                    if len(v_clean) == 8 and v_clean.isdigit():
+                        date_str = v_clean
+                        break
+                if date_str:
+                    break
+            if date_str:
+                break
+
+        # ------------------------------------------------------------------
+        # 3. URL 路径中查找序列号 / Look for serial in URL path segments
+        # ------------------------------------------------------------------
+        if not serial:
+            path_m = re.search(r'(DS-[A-Z0-9\-]+)', parsed.path, re.IGNORECASE)
+            if path_m:
+                serial = path_m.group(1)
+
+        # ------------------------------------------------------------------
+        # 4. 尝试 base64 解码参数以提取序列号/日期
+        #    Try base64-decoding param values to extract serial/date
+        # ------------------------------------------------------------------
+        if not serial:
+            for values_list in params.values():
+                for v in values_list:
+                    if len(v) < 8:
+                        continue
+                    try:
+                        # base64 requires input length to be a multiple of 4; add "=" padding
+                        padding_needed = (4 - len(v) % 4) % 4
+                        padded = v + "=" * padding_needed
+                        decoded = base64.b64decode(padded).decode("utf-8", errors="ignore")
+
+                        # Try to find serial in raw decoded string
+                        sn_m = re.search(r'(DS-[A-Z0-9\-]+)', decoded, re.IGNORECASE)
+                        if sn_m:
+                            serial = sn_m.group(1)
+                            # Also look for a date in the same decoded payload
+                            if not date_str:
+                                date_m = re.search(r'(\d{8})', decoded)
+                                if date_m:
+                                    date_str = date_m.group(1)
+
+                        # Try to parse decoded string as JSON
+                        if not serial:
+                            try:
+                                data = json.loads(decoded)
+                                for k in _SERIAL_PARAM_NAMES:
+                                    val = data.get(k) or data.get(k.lower()) or data.get(k.upper())
+                                    if val and re.match(r'^DS-[A-Z0-9\-]+', str(val), re.IGNORECASE):
+                                        serial = str(val)
+                                        break
+                                if not date_str:
+                                    for k in _DATE_PARAM_NAMES:
+                                        val = data.get(k) or data.get(k.lower()) or data.get(k.upper())
+                                        if val:
+                                            v_clean = str(val).replace("-", "")
+                                            if len(v_clean) == 8 and v_clean.isdigit():
+                                                date_str = v_clean
+                                                break
+                            except (json.JSONDecodeError, TypeError, AttributeError):
+                                pass
+
+                    except Exception:
+                        pass
+
+                    if serial:
+                        break
+                if serial:
+                    break
+
+        return serial, date_str
+
+    except Exception:
+        return None, None
+
+
+def _find_redirect_urls(content: str) -> list[str]:
+    """
+    从 HTML/JS 响应内容中提取可能包含密钥的二级跳转 URL。
+    Find secondary redirect URLs inside an HTML/JS response that may lead to the key.
+
+    主要用于提取海康威视重置页面中嵌入的微信公众号 URL。
+    Primarily used to extract WeChat URLs embedded in Hikvision's reset landing pages.
+    """
+    urls: list[str] = []
+    seen: set[str] = set()
+    for pattern in _SECONDARY_URL_PATTERNS:
+        for m in re.finditer(pattern, content, re.IGNORECASE):
+            url = m.group(1).strip()
+            if url not in seen:
+                seen.add(url)
+                urls.append(url)
+    return urls
+
+
 async def _process_url(url: str) -> ResetKeyResult:
     """
     请求 QR 码中的 URL 并尝试提取重置密钥。
     Fetch a URL from the QR code and attempt to extract the reset key.
 
-    安全措施：仅允许请求白名单内的海康威视域名，防止 SSRF 攻击。
-    Security: Only URLs belonging to known Hikvision domains are fetched to prevent SSRF.
+    处理策略（按顺序）/ Processing strategy (in order):
+      1. 验证域名白名单 / Validate against domain allowlist (SSRF protection)
+      2. 请求 URL 并从响应中提取密钥 / Fetch URL and extract key from response
+      3. 若响应中无密钥，扫描响应内容中的二级 URL 并尝试获取
+         If no key in response, scan response for secondary URLs and try those
+      4. 若请求返回 403 或网络错误，尝试从 URL 参数提取序列号进行离线生成
+         If 403 or network error, try extracting serial from URL params for offline keygen
+
+    安全措施：仅允许请求白名单内的域名，防止 SSRF 攻击。
+    Security: Only URLs belonging to known allowlisted domains are fetched to prevent SSRF.
     """
     parsed = urlparse(url)
     hostname = parsed.hostname or ""
@@ -212,12 +407,12 @@ async def _process_url(url: str) -> ResetKeyResult:
 
     # 严格域名后缀匹配，防止 "evil.hikvision.com.attacker.com" 绕过
     # Strict domain suffix match to prevent "evil.hikvision.com.attacker.com" bypass
-    is_hikvision = any(
+    is_allowed = any(
         hostname == domain or hostname.endswith(f".{domain}")
         for domain in HIKVISION_DOMAINS
     )
 
-    if not is_hikvision:
+    if not is_allowed:
         return ResetKeyResult(
             qr_content=url,
             method="url_fetch",
@@ -249,25 +444,155 @@ async def _process_url(url: str) -> ResetKeyResult:
                 raw_response=content[:2000],
             )
 
+        # 未直接找到密钥 → 扫描响应中的二级 URL（如微信链接）并尝试获取
+        # Key not found directly → scan response for secondary URLs (e.g. WeChat links)
+        secondary_result = await _try_secondary_urls(url, content)
+        if secondary_result is not None:
+            return secondary_result
+
         return ResetKeyResult(
             qr_content=url,
             method="url_fetch",
-            error="Fetched URL successfully but could not extract reset key from response.",
+            error=(
+                "Fetched URL successfully but could not extract reset key from response. "
+                "The server may require WeChat authentication. "
+                "Try opening the URL in a WeChat browser on a mobile device."
+            ),
             raw_response=content[:2000],
         )
 
     except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        # 403 或其他 HTTP 错误：尝试从 URL 参数离线提取序列号
+        # 403 or other HTTP error: try offline extraction from URL params
+        offline = _try_offline_from_url(url)
+        if offline is not None:
+            return offline
+        hint = ""
+        if status == 403:
+            hint = (
+                " This may be due to geo-restrictions (China-only access) or "
+                "WeChat authentication requirements. "
+                "Try opening the URL directly in a WeChat browser on a mobile device in China."
+            )
         return ResetKeyResult(
             qr_content=url,
             method="url_fetch",
-            error=f"HTTP error {exc.response.status_code} when fetching URL: {url}",
+            error=f"HTTP error {status} when fetching URL: {url}.{hint}",
         )
     except httpx.RequestError as exc:
+        # 网络错误：尝试从 URL 参数离线提取序列号
+        # Network error: try offline extraction from URL params
+        offline = _try_offline_from_url(url)
+        if offline is not None:
+            return offline
         return ResetKeyResult(
             qr_content=url,
             method="url_fetch",
             error=f"Network error when fetching URL: {exc}",
         )
+
+
+def _try_offline_from_url(url: str) -> Optional["ResetKeyResult"]:
+    """
+    尝试从 URL 查询参数中提取序列号，并使用离线算法生成密钥。
+    Try to extract a serial number from URL query parameters and generate a key offline.
+
+    用于 URL 请求失败（如 403）时的本地解析回退。
+    Used as a local-parsing fallback when the URL fetch fails (e.g. 403).
+
+    Returns ResetKeyResult if a serial was found, None otherwise.
+    """
+    serial, date_str = _extract_serial_from_url(url)
+    if not serial:
+        return None
+
+    today = date.today()
+    if date_str:
+        try:
+            key = generate_key_from_serial_date(serial, date_str)
+            return ResetKeyResult(
+                key=key,
+                qr_content=url,
+                method="offline_from_url",
+                error=(
+                    f"URL fetch failed. Generated key offline using serial '{serial}' "
+                    f"and date '{date_str}' extracted from the URL. "
+                    "Note: This works for older firmware only. "
+                    "If this key does not work, please check the device date in SADP."
+                ),
+            )
+        except ValueError:
+            pass
+
+    # 日期未在 URL 中找到，使用今天日期
+    # Date not found in URL, fall back to today's date
+    key = generate_key_v1(serial, today)
+    return ResetKeyResult(
+        key=key,
+        qr_content=url,
+        method="offline_from_url",
+        error=(
+            f"URL fetch failed. Generated key offline using serial '{serial}' "
+            f"extracted from the URL with today's date ({today}). "
+            "Note: This works for older firmware only. "
+            "If this key does not work, please provide the exact device date shown in SADP."
+        ),
+    )
+
+
+async def _try_secondary_urls(
+    original_url: str, response_content: str
+) -> Optional["ResetKeyResult"]:
+    """
+    从 HTML 响应中提取二级 URL（如微信链接），并尝试从中获取密钥。
+    Extract secondary URLs (e.g. WeChat links) from an HTML response and try to get the key.
+
+    用于处理海康威视重置页面跳转到微信公众号的场景。
+    Handles the case where Hikvision reset pages redirect to WeChat official accounts.
+    """
+    candidate_urls = _find_redirect_urls(response_content)
+    for sec_url in candidate_urls:
+        try:
+            sec_parsed = urlparse(sec_url)
+            sec_hostname = sec_parsed.hostname or ""
+        except Exception:
+            continue
+
+        # 仅跟踪白名单域名的二级 URL / Only follow secondary URLs from allowlisted domains
+        is_allowed = any(
+            sec_hostname == domain or sec_hostname.endswith(f".{domain}")
+            for domain in HIKVISION_DOMAINS
+        )
+        if not is_allowed:
+            logger.debug("Skipping secondary URL (non-allowlisted domain): %s", sec_url)
+            continue
+        if sec_parsed.scheme not in ("http", "https"):
+            continue
+
+        logger.info("Trying secondary URL from response: %s://%s", sec_parsed.scheme, sec_hostname)
+        try:
+            async with httpx.AsyncClient(
+                timeout=20.0,
+                headers={"User-Agent": MOBILE_UA},
+                follow_redirects=True,
+            ) as client:
+                sec_response = await client.get(sec_url)
+                sec_response.raise_for_status()
+                sec_content = sec_response.text
+
+            key = _extract_key_from_response(sec_content)
+            if key:
+                return ResetKeyResult(
+                    key=key,
+                    qr_content=original_url,
+                    method="url_fetch_via_redirect",
+                    raw_response=sec_content[:2000],
+                )
+        except Exception as exc:
+            logger.debug("Secondary URL fetch failed for %s: %s", sec_url, exc)
+
+    return None
 
 
 def _extract_key_from_response(content: str) -> Optional[str]:
