@@ -7,6 +7,7 @@ import pytest
 from hikresetpasswd.service import (
     _extract_key_from_response,
     _extract_serial_from_url,
+    _fetch_with_waf_retry,
     _find_redirect_urls,
     _is_waf_blocked,
     _looks_like_device_data,
@@ -669,3 +670,257 @@ class TestWAFDetection:
 
             result = await process_qr_content(url)
             assert result.waf_blocked is True
+
+
+class TestJsQrCodeUrlExtraction:
+    """Tests for extracting URLs from JavaScript QR code generation."""
+
+    def test_extracts_url_from_new_qrcode(self):
+        """Extract URL from new QRCode() constructor."""
+        content = '''
+        <script>
+        var qrcode = new QRCode(document.getElementById("qrcode"), "https://mp.weixin.qq.com/s/abc123");
+        </script>
+        '''
+        urls = _find_redirect_urls(content)
+        assert any("mp.weixin.qq.com" in u for u in urls)
+
+    def test_extracts_url_from_makecode(self):
+        """Extract URL from qrcode.makeCode() call."""
+        content = '''
+        <script>
+        var qrcode = new QRCode(document.getElementById("qrcode"));
+        qrcode.makeCode("https://mp.weixin.qq.com/s/reset123");
+        </script>
+        '''
+        urls = _find_redirect_urls(content)
+        assert any("mp.weixin.qq.com" in u for u in urls)
+
+    def test_extracts_url_from_js_var(self):
+        """Extract URL from JavaScript variable assignment."""
+        content = '''
+        <script>
+        var resetUrl = "https://mp.weixin.qq.com/s/device_reset_xyz";
+        new QRCode(document.getElementById("qr"), resetUrl);
+        </script>
+        '''
+        urls = _find_redirect_urls(content)
+        assert any("mp.weixin.qq.com" in u for u in urls)
+
+    def test_extracts_url_from_data_attribute(self):
+        """Extract URL from HTML data-url attribute."""
+        content = '<div data-url="https://hikvision.com/reset/key123"></div>'
+        urls = _find_redirect_urls(content)
+        assert any("hikvision.com" in u for u in urls)
+
+    def test_extracts_wechat_url_from_content(self):
+        """Extract WeChat URLs directly from page content."""
+        content = '''
+        <script>
+        function init() {
+            var url = "https://mp.weixin.qq.com/cgi-bin/showqrcode?ticket=abc123def456";
+            generateQrCode(url);
+        }
+        </script>
+        '''
+        urls = _find_redirect_urls(content)
+        assert any("mp.weixin.qq.com" in u for u in urls)
+
+    def test_skips_css_js_resources(self):
+        """Should skip CSS/JS/image resource URLs."""
+        content = '''
+        <link href="https://hikvision.com/style.css" rel="stylesheet">
+        <script src="https://hikvision.com/app.js"></script>
+        <img src="https://hikvision.com/logo.png">
+        <a href="https://hikvision.com/reset/key123">Reset</a>
+        '''
+        urls = _find_redirect_urls(content)
+        assert not any(u.endswith(".css") for u in urls)
+        assert not any(u.endswith(".js") for u in urls)
+        assert not any(u.endswith(".png") for u in urls)
+        assert any("reset/key123" in u for u in urls)
+
+    def test_extracts_open_weixin_url(self):
+        """Extract open.weixin.qq.com URLs."""
+        content = 'var oauthUrl = "https://open.weixin.qq.com/connect/oauth2/authorize?appid=xxx&redirect_uri=yyy";'
+        urls = _find_redirect_urls(content)
+        assert any("open.weixin.qq.com" in u for u in urls)
+
+
+class TestWafCookieRetry:
+    """Tests for WAF cookie-based retry mechanism."""
+
+    @pytest.mark.asyncio
+    async def test_retry_succeeds_on_second_attempt(self):
+        """When first request is WAF-blocked, retry with cookies should succeed."""
+        waf_html = "function changePageElem(){ errorTip: '云安全平台检测到您当前的访问行为存在异常' }"
+        real_html = '{"key": "TESTKEY123", "status": "ok"}'
+
+        with patch("hikresetpasswd.service.httpx.AsyncClient") as mock_client_class:
+            mock_response_waf = MagicMock()
+            mock_response_waf.text = waf_html
+            mock_response_waf.raise_for_status = MagicMock()
+
+            mock_response_real = MagicMock()
+            mock_response_real.text = real_html
+            mock_response_real.raise_for_status = MagicMock()
+
+            mock_client = AsyncMock()
+            # First call returns WAF, second returns real content
+            mock_client.get = AsyncMock(side_effect=[mock_response_waf, mock_response_real])
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_class.return_value = mock_client
+
+            content = await _fetch_with_waf_retry("https://hikvision.com/reset?token=test")
+            assert "TESTKEY123" in content
+            assert mock_client.get.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_no_retry_when_not_waf_blocked(self):
+        """When first request is not WAF-blocked, should not retry."""
+        real_html = '{"key": "MYKEY456", "status": "ok"}'
+
+        with patch("hikresetpasswd.service.httpx.AsyncClient") as mock_client_class:
+            mock_response = MagicMock()
+            mock_response.text = real_html
+            mock_response.raise_for_status = MagicMock()
+
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_class.return_value = mock_client
+
+            content = await _fetch_with_waf_retry("https://hikvision.com/reset?token=test")
+            assert "MYKEY456" in content
+            assert mock_client.get.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_retry_exhausted_returns_waf_content(self):
+        """When all retries fail, should return last WAF content."""
+        waf_html = "function changePageElem(){ errorTip: 'abnormal' }"
+
+        with patch("hikresetpasswd.service.httpx.AsyncClient") as mock_client_class:
+            mock_response = MagicMock()
+            mock_response.text = waf_html
+            mock_response.raise_for_status = MagicMock()
+
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_class.return_value = mock_client
+
+            content = await _fetch_with_waf_retry("https://hikvision.com/reset?token=test")
+            assert "changePageElem" in content
+            # 1 initial + 2 retries = 3 total
+            assert mock_client.get.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_waf_retry_extracts_key_from_second_response(self):
+        """End-to-end: WAF retry succeeds and extracts key."""
+        waf_html = "function changePageElem(){ errorTip: '云安全平台检测到您当前的访问行为存在异常' }"
+        real_html = '{"securityCode": "RSSQeRqeee"}'
+
+        with patch("hikresetpasswd.service.httpx.AsyncClient") as mock_client_class:
+            mock_response_waf = MagicMock()
+            mock_response_waf.text = waf_html
+            mock_response_waf.raise_for_status = MagicMock()
+
+            mock_response_real = MagicMock()
+            mock_response_real.text = real_html
+            mock_response_real.raise_for_status = MagicMock()
+
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(side_effect=[mock_response_waf, mock_response_real])
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_class.return_value = mock_client
+
+            result = await process_qr_content("https://hikvision.com/reset?token=test")
+            assert result.key == "RSSQeRqeee"
+            assert result.waf_blocked is False
+
+    @pytest.mark.asyncio
+    async def test_waf_retry_with_secondary_url_extraction(self):
+        """End-to-end: WAF retry + JS QR code URL extraction."""
+        waf_html = "function changePageElem(){ errorTip: 'abnormal' }"
+        # Page with JS that generates a QR code containing WeChat URL
+        page_with_qr = '''
+        <html><body>
+        <div id="qrcode"></div>
+        <script>
+        var qrcode = new QRCode(document.getElementById("qrcode"),
+            "https://mp.weixin.qq.com/s/reset_key_page_abc123");
+        </script>
+        </body></html>
+        '''
+        wechat_response = '{"securityCode": "TestKey789"}'
+
+        with patch("hikresetpasswd.service.httpx.AsyncClient") as mock_client_class:
+            # For the main URL fetch (with WAF retry)
+            mock_response_waf = MagicMock()
+            mock_response_waf.text = waf_html
+            mock_response_waf.raise_for_status = MagicMock()
+
+            mock_response_page = MagicMock()
+            mock_response_page.text = page_with_qr
+            mock_response_page.raise_for_status = MagicMock()
+
+            mock_response_wechat = MagicMock()
+            mock_response_wechat.text = wechat_response
+            mock_response_wechat.raise_for_status = MagicMock()
+
+            call_count = 0
+
+            async def mock_get_side_effect(url, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                if "mp.weixin.qq.com" in url:
+                    return mock_response_wechat
+                if call_count <= 1:
+                    return mock_response_waf
+                return mock_response_page
+
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(side_effect=mock_get_side_effect)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_class.return_value = mock_client
+
+            result = await process_qr_content("https://hikvision.com/reset?token=test")
+            assert result.key == "TestKey789"
+            assert result.method == "url_fetch_via_redirect"
+
+
+class TestNewDomainAllowlist:
+    """Tests for the expanded domain allowlist."""
+
+    @pytest.mark.asyncio
+    async def test_guardingvision_domain_allowed(self):
+        """guardingvision.com should be in the allowlist."""
+        url = "https://www.guardingvision.com/reset?sn=DS-TEST&date=20240315"
+        with patch("hikresetpasswd.service._fetch_with_waf_retry") as mock_fetch:
+            mock_fetch.return_value = '{"key": "TESTKEY"}'
+            result = await process_qr_content(url)
+            assert result.key == "TESTKEY"
+
+    @pytest.mark.asyncio
+    async def test_hikvisioniot_domain_allowed(self):
+        """hikvisioniot.com should be in the allowlist."""
+        url = "https://www.hikvisioniot.com/reset?sn=DS-TEST&date=20240315"
+        with patch("hikresetpasswd.service._fetch_with_waf_retry") as mock_fetch:
+            mock_fetch.return_value = '{"key": "TESTKEY"}'
+            result = await process_qr_content(url)
+            assert result.key == "TESTKEY"
+
+    @pytest.mark.asyncio
+    async def test_old_domains_still_work(self):
+        """Previously allowed domains should still work."""
+        for domain in ["hikvision.com", "hikconnect.com", "hik-connect.com", "ezviz.com"]:
+            url = f"https://www.{domain}/reset?sn=DS-TEST"
+            with patch("hikresetpasswd.service._fetch_with_waf_retry") as mock_fetch:
+                mock_fetch.return_value = '{"key": "TESTKEY"}'
+                result = await process_qr_content(url)
+                assert result.key == "TESTKEY", f"Domain {domain} should be allowed"

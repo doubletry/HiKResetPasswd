@@ -47,6 +47,8 @@ HIKVISION_DOMAINS = [
     "hikvision.com",
     "hikconnect.com",
     "hik-connect.com",
+    "hikvisioniot.com",       # 海康 IoT 平台 / Hikvision IoT platform
+    "guardingvision.com",     # 萤石国际版（密码重置跳转）/ Guarding Vision (reset redirects)
     "lechange.com",
     "ezviz.com",
     "weixin.qq.com",  # WeChat — used by Hikvision for key distribution in China / 微信公众号密钥分发
@@ -144,12 +146,37 @@ _DATE_PARAM_NAMES = [
 
 # HTML/JS 响应中可能包含二级跳转 URL 的正则表达式
 # Regex patterns for finding secondary redirect URLs inside HTML/JS responses
+#
+# 海康威视的重置页面经常包含 JavaScript 代码，通过 JS 动态生成二维码。
+# 这些二维码通常包含指向微信公众号的 URL，用户扫描后可获取重置密钥。
+# Hikvision reset pages often contain JavaScript that dynamically generates QR codes.
+# These QR codes typically contain WeChat URLs for obtaining the reset key.
 _SECONDARY_URL_PATTERNS = [
+    # 标准 HTML 属性 / Standard HTML attributes
     r'href=["\']+(https?://[^\s"\'<>]{10,})',
+    # JSON 字段 / JSON fields
     r'"url"\s*:\s*"(https?://[^"]{10,})"',
     r"'url'\s*:\s*'(https?://[^']{10,})'",
+    # JS 重定向 / JS redirects
     r'window\.location(?:\.href)?\s*=\s*["\']+(https?://[^"\']{10,})',
     r'location\.replace\(["\']+(https?://[^"\']{10,})',
+    # JS QR 码库调用（new QRCode / makeCode / qrcode）
+    # JS QR code library calls (new QRCode / makeCode / qrcode)
+    r'(?:new\s+QRCode|QRCode)\s*\([^)]*["\']+(https?://[^"\']{10,})',
+    r'\.makeCode\s*\(\s*["\']+(https?://[^"\']{10,})',
+    r'\.text\s*=\s*["\']+(https?://[^"\']{10,})',
+    # JS 变量赋值中的 URL / URLs in JS variable assignments
+    r'(?:var|let|const)\s+\w+\s*=\s*["\']+(https?://[^"\']{10,})',
+    # JS 函数参数中的 URL / URLs in JS function arguments
+    r'(?:createQr|generateQR|showQR|qrcode|renderQR)\s*\([^)]*["\']+(https?://[^"\']{10,})',
+    # data-url 和 data-href 属性 / data-url and data-href attributes
+    r'data-(?:url|href|link|qr|src)\s*=\s*["\']+(https?://[^"\']{10,})',
+    # img src 属性中的二维码图片 URL（API 生成的二维码图片）
+    # img src with QR code image URLs (API-generated QR images)
+    r'<img[^>]+src=["\']+(https?://[^"\']{10,}qr[^"\']*)',
+    # 微信特定的 URL 模式 / WeChat-specific URL patterns
+    r'(https?://mp\.weixin\.qq\.com/[^\s"\'<>]{10,})',
+    r'(https?://open\.weixin\.qq\.com/[^\s"\'<>]{10,})',
 ]
 
 
@@ -629,15 +656,35 @@ def _find_redirect_urls(content: str) -> list[str]:
 
     主要用于提取海康威视重置页面中嵌入的微信公众号 URL。
     Primarily used to extract WeChat URLs embedded in Hikvision's reset landing pages.
+
+    增强功能：还能从 JavaScript 中提取 QR 码内容 URL（如 JS 生成的二维码中嵌入的链接）。
+    Enhanced: Also extracts QR code content URLs from JavaScript (URLs embedded in JS-generated QR codes).
     """
     urls: list[str] = []
     seen: set[str] = set()
+
+    # 标准模式匹配 / Standard pattern matching
     for pattern in _SECONDARY_URL_PATTERNS:
         for m in re.finditer(pattern, content, re.IGNORECASE):
             url = m.group(1).strip()
+            # 排除明显不是目标的 URL（如 CSS/JS/图片资源）
+            # Exclude obviously non-target URLs (CSS/JS/image resources)
+            if re.search(r'\.(css|js|png|jpg|jpeg|gif|ico|svg|woff|ttf)(\?|$)', url, re.IGNORECASE):
+                continue
             if url not in seen:
                 seen.add(url)
                 urls.append(url)
+
+    # 从 JS 字符串拼接中提取完整 URL（海康威视常用 JS 变量拼接 URL）
+    # Extract complete URLs from JS string concatenation (common in Hikvision pages)
+    # e.g.: var url = "https://mp.weixin.qq.com/" + "xxx" + "/yyy"
+    # We do a broad scan for any https URL fragments in the content
+    for m in re.finditer(r'(https?://(?:mp\.weixin\.qq\.com|open\.weixin\.qq\.com|weixin\.qq\.com)[^\s"\'<>\\]{5,})', content):
+        url = m.group(1).strip().rstrip('\\')
+        if url not in seen:
+            seen.add(url)
+            urls.append(url)
+
     return urls
 
 
@@ -674,6 +721,74 @@ _WAF_BLOCKED_ERROR = (
     "② Use the 'Offline Key Generation' tab with serial number and date\n"
     "③ Scan the SADP QR code with WeChat"
 )
+
+
+async def _fetch_with_waf_retry(url: str, max_retries: int = 2) -> str:
+    """
+    使用 cookie 持久化进行 WAF 重试的 HTTP 请求。
+    Fetch a URL with cookie-based WAF retry.
+
+    海康威视的云安全 WAF 通常在第一次请求时设置 cookie（如 __waf_...），
+    然后在后续请求中根据 cookie 放行。模拟浏览器的行为：
+    1. 第一次请求：可能返回 WAF 拦截页面 + 设置 cookie
+    2. 使用获得的 cookie 重新请求：可能获得真实内容
+    Hikvision's cloud WAF typically sets cookies on the first request (e.g. __waf_...),
+    then allows subsequent requests with those cookies. This simulates browser behavior:
+    1. First request: may return WAF block page + set cookies
+    2. Retry with cookies: may get the real content
+
+    Args:
+        url: 要请求的 URL / URL to fetch
+        max_retries: 最大重试次数 / Maximum number of retries
+
+    Returns:
+        响应文本内容 / Response text content
+
+    Raises:
+        httpx.HTTPStatusError: HTTP 错误 / HTTP errors
+        httpx.RequestError: 网络错误 / Network errors
+    """
+    parsed = urlparse(url)
+    hostname = parsed.hostname or ""
+
+    # 使用 cookie jar 的持久 client，在请求之间保持 cookie
+    # Use a persistent client with cookie jar to maintain cookies between requests
+    async with httpx.AsyncClient(
+        timeout=30.0,
+        headers=_BROWSER_HEADERS,
+        follow_redirects=True,
+    ) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        content = response.text
+
+        # 如果第一次请求没有被 WAF 拦截，直接返回
+        # If first request was not WAF-blocked, return immediately
+        if not _is_waf_blocked(content):
+            return content
+
+        # WAF 拦截 → 使用同一 client（已保存 cookie）重试
+        # WAF blocked → retry with same client (cookies are preserved)
+        for attempt in range(1, max_retries + 1):
+            logger.info(
+                "WAF detected on %s, retrying with cookies (attempt %d/%d)",
+                hostname, attempt, max_retries,
+            )
+            # 添加 Referer 头（浏览器通常会这么做）
+            # Add Referer header (as browsers normally do)
+            retry_headers = {"Referer": f"{parsed.scheme}://{hostname}/"}
+            response = await client.get(url, headers=retry_headers)
+            response.raise_for_status()
+            content = response.text
+
+            if not _is_waf_blocked(content):
+                logger.info("WAF retry succeeded on attempt %d", attempt)
+                return content
+
+        # 所有重试都失败了，返回最后的 WAF 页面内容
+        # All retries failed, return the last WAF page content
+        logger.warning("WAF retry exhausted for %s", hostname)
+        return content
 
 
 async def _process_url(url: str) -> ResetKeyResult:
@@ -722,20 +837,12 @@ async def _process_url(url: str) -> ResetKeyResult:
         )
 
     try:
-        # 使用完整的浏览器请求头，避免被海康云安全 WAF 拦截
-        # Use full browser-like headers to avoid Hikvision cloud security WAF blocking
-        async with httpx.AsyncClient(
-            timeout=30.0,
-            headers=_BROWSER_HEADERS,
-            follow_redirects=True,
-        ) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            content = response.text
+        content = await _fetch_with_waf_retry(url)
 
-        # 检测 WAF 拦截页面 / Detect WAF block page
+        # 检测 WAF 拦截页面（重试后仍被拦截的情况）
+        # Detect WAF block page (still blocked after retry)
         if _is_waf_blocked(content):
-            logger.warning("Hikvision WAF blocked the request for %s", hostname)
+            logger.warning("Hikvision WAF blocked the request for %s after retry", hostname)
             # 即使被 WAF 拦截，仍尝试从 URL 参数离线生成
             # Even if WAF blocked, try offline generation from URL params
             offline = _try_offline_from_url(url)
