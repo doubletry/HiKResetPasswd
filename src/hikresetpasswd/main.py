@@ -232,9 +232,10 @@ async def upload_sadp_file(file: UploadFile = File(...)):
     if len(file_bytes) == 0:
         raise HTTPException(status_code=400, detail="Empty file uploaded")
 
-    # 尝试多种编码解码文件内容 / Try multiple encodings to decode file content
+    # 尝试多种编码解码文件内容（latin-1 在最后，因为它从不失败但可能误读中文）
+    # Try multiple encodings; latin-1 last since it never fails but may misread Chinese
     file_content: str
-    for encoding in ("utf-8", "latin-1", "gbk", "gb2312"):
+    for encoding in ("utf-8", "gbk", "gb2312", "latin-1"):
         try:
             file_content = file_bytes.decode(encoding)
             break

@@ -374,10 +374,10 @@ def parse_sadp_device_file(file_content: str) -> list[dict]:
     # The serial is typically embedded as readable ASCII in the binary data.
     # ------------------------------------------------------------------
 
-    # 常见海康序列号模式 / Common Hikvision serial number patterns:
-    #   DS-2CD2T45G0P-I20190101XXXX
-    #   DS-7908HQH-SH20200101BBB
-    #   iDS-2CD7A46G0/P-HZSY(B)20240101CCCC
+    # 常见海康序列号模式（含制造日期，如 DS-2CD2T45G0P-I20190101XXXX）
+    # Primary pattern: full serial with embedded 8-digit manufacturing date.
+    # This is strict to avoid matching random base64 fragments that happen
+    # to contain "DS-".
     serial_pattern = re.compile(
         r'(?:i?DS-[A-Z0-9/()_-]+(?:\d{8,})[A-Z0-9]+)',
         re.IGNORECASE,
@@ -385,8 +385,9 @@ def parse_sadp_device_file(file_content: str) -> list[dict]:
     matches = serial_pattern.findall(content)
 
     if not matches:
-        # 备用策略：查找 DS- 开头的任何可打印字符串
-        # Fallback: look for any printable string starting with DS-
+        # 备用策略：较短的 DS- 开头串（不含制造日期，如旧设备或截断的序列号）
+        # Fallback: shorter DS- prefixed strings without the date requirement,
+        # for older devices or truncated serials where the full format isn't present.
         fallback_pattern = re.compile(r'((?:i?DS-)[A-Z0-9/()_-]{5,})', re.IGNORECASE)
         matches = fallback_pattern.findall(content)
 
