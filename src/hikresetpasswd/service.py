@@ -489,13 +489,14 @@ async def _try_hikvision_service_endpoints(qr_content: str) -> Optional[ResetKey
     for endpoint in _HIKVISION_RESET_ENDPOINTS:
         try:
             logger.info("Trying Hikvision service endpoint: %s", endpoint)
+            parsed_ep = urlparse(endpoint)
             async with httpx.AsyncClient(
                 timeout=30.0,
                 headers={
                     "User-Agent": MOBILE_UA,
                     "Content-Type": "application/json",
                     "Referer": endpoint,
-                    "Origin": f"{urlparse(endpoint).scheme}://{urlparse(endpoint).hostname}",
+                    "Origin": f"{parsed_ep.scheme}://{parsed_ep.hostname}",
                 },
                 follow_redirects=True,
             ) as client:
