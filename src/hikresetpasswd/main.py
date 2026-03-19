@@ -7,7 +7,9 @@ FastAPI 应用，提供以下功能 / FastAPI app providing:
   2. 从 QR 内容中尝试获取重置密钥 / Attempt to obtain reset key from QR content
   3. 离线密钥生成（序列号+日期）/ Offline key generation (serial + date)
   4. 接收 SADP 设备特征文件并解析生成密钥 / Accept SADP device characteristic files
-  5. 生产模式下托管前端静态文件 / Serve frontend static files in production mode
+  5. SADP 局域网设备发现（自动获取序列号、固件版本、设备时间）
+     SADP LAN device discovery (auto-detect serial, firmware version, device time)
+  6. 生产模式下托管前端静态文件 / Serve frontend static files in production mode
 """
 
 import logging
@@ -22,6 +24,7 @@ from pydantic import BaseModel, Field
 
 from .config import settings
 from .qr_decoder import QRCodeDecodeError, decode_qr_from_bytes
+from .sadp_discovery import discover_devices
 from .service import (
     generate_key_offline,
     process_qr_content,
@@ -121,6 +124,38 @@ class SADPFileResponse(BaseModel):
     )
     count: int = Field(0, description="Number of devices found / 找到的设备数量")
     error: str | None = Field(None, description="File-level error (if file could not be parsed) / 文件级错误信息")
+
+
+class DiscoveredDeviceResponse(BaseModel):
+    """SADP 发现的单个设备信息 / Single device discovered via SADP."""
+
+    ip_address: str = Field("", description="Device IP address / 设备 IP 地址")
+    serial_number: str = Field("", description="Device serial number / 设备序列号")
+    device_description: str = Field("", description="Device model/description / 设备型号")
+    software_version: str = Field("", description="Firmware version / 固件版本")
+    dsp_version: str = Field("", description="DSP version / DSP 版本")
+    boot_time: str = Field("", description="Device boot time (internal clock) / 设备启动时间（内部时钟）")
+    mac: str = Field("", description="MAC address / MAC 地址")
+    subnet_mask: str = Field("", description="Subnet mask / 子网掩码")
+    gateway: str = Field("", description="Gateway / 网关")
+    http_port: str = Field("", description="HTTP port / HTTP 端口")
+    command_port: str = Field("", description="Command port / 命令端口")
+    dhcp: str = Field("", description="DHCP enabled / DHCP 是否启用")
+    analog_channels: str = Field("", description="Number of analog channels / 模拟通道数")
+    digital_channels: str = Field("", description="Number of digital channels / 数字通道数")
+    supports_offline_reset: bool = Field(False, description="Whether offline reset is supported / 是否支持离线重置")
+    firmware_note: str = Field("", description="Firmware support note / 固件版本说明")
+
+
+class SADPDiscoveryResponse(BaseModel):
+    """SADP 局域网设备发现结果 / SADP LAN device discovery result."""
+
+    devices: list[DiscoveredDeviceResponse] = Field(
+        default_factory=list,
+        description="Discovered devices / 发现的设备列表",
+    )
+    count: int = Field(0, description="Number of devices found / 发现的设备数量")
+    error: str | None = Field(None, description="Discovery error / 发现过程中的错误")
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +290,44 @@ async def upload_sadp_file(file: UploadFile = File(...)):
         devices=[KeyResponse(**r.to_dict()) for r in results],
         count=len(results),
     )
+
+
+@app.post("/api/sadp/discover", response_model=SADPDiscoveryResponse)
+async def discover_sadp_devices(timeout: float = 5):
+    """
+    通过 SADP 协议在局域网中发现海康威视设备。
+    Discover Hikvision devices on the local network via SADP protocol.
+
+    自动获取设备的序列号、固件版本和启动时间（设备内部时钟）。
+    Automatically retrieves device serial number, firmware version, and boot time (internal clock).
+
+    这解决了以下问题 / This solves:
+      - 用户无法获取设备时间 / Users unable to get device time
+      - 需要手动查找序列号 / Need to manually look up serial numbers
+      - 需要判断固件版本是否支持离线重置 / Need to determine if firmware supports offline reset
+
+    ⚠️ 需要与设备在同一局域网内，且 UDP 端口 37020 未被防火墙阻止。
+    ⚠️ Requires being on the same LAN as the device, and UDP port 37020 not blocked by firewall.
+    """
+    # 限制超时范围 / Limit timeout range
+    timeout = max(1.0, min(timeout, 30.0))
+
+    try:
+        devices = await discover_devices(timeout=timeout)
+        return SADPDiscoveryResponse(
+            devices=[DiscoveredDeviceResponse(**d.to_dict()) for d in devices],
+            count=len(devices),
+        )
+    except Exception as exc:
+        logger.warning("SADP discovery failed: %s", exc)
+        return SADPDiscoveryResponse(
+            error=(
+                f"设备发现失败: {exc}. "
+                "请确保与设备在同一局域网内，且 UDP 端口 37020 未被防火墙阻止。"
+                f" / Discovery failed: {exc}. "
+                "Ensure you are on the same LAN and UDP port 37020 is not blocked."
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------

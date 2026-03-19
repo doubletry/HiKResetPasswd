@@ -12,6 +12,92 @@
       </button>
     </div>
 
+    <!-- Device Discovery Tab -->
+    <div v-if="activeTab === 'discover'" class="tab-content card">
+      <h2>🔍 局域网设备发现 / LAN Device Discovery</h2>
+      <p class="description">
+        通过 SADP 协议自动发现局域网中的海康威视设备，获取序列号、固件版本和设备时间。<br />
+        <strong>解决无法获取设备时间的问题：</strong>自动扫描可获取设备启动时间，用于离线密钥生成。<br />
+        Automatically discover Hikvision devices on the LAN via SADP protocol, retrieving serial numbers,
+        firmware versions, and device time.<br />
+        <strong>Solves the "cannot get device time" problem:</strong> auto-scan retrieves boot time for offline key generation.
+      </p>
+      <div class="firmware-warning">
+        <strong>⚠️ 前置条件 / Prerequisites:</strong>
+        <ul>
+          <li>本工具需与海康设备在<strong>同一局域网</strong>内运行。
+              This tool must run on the <strong>same LAN</strong> as the Hikvision device.</li>
+          <li>UDP 端口 37020 不能被防火墙阻止。
+              UDP port 37020 must not be blocked by firewall.</li>
+          <li>自动检测固件版本，告知您是否可以使用离线重置。
+              Auto-detects firmware version and tells you if offline reset is available.</li>
+        </ul>
+      </div>
+
+      <div class="actions">
+        <button
+          class="btn btn-primary"
+          :disabled="isDiscovering"
+          @click="discoverDevices"
+        >
+          <span v-if="isDiscovering" class="spinner">⟳</span>
+          <span v-else>🔍 扫描局域网设备</span>
+        </button>
+      </div>
+
+      <!-- Discovered Devices List -->
+      <div v-if="discoveredDevices.length > 0" class="discovery-results">
+        <h3>发现 {{ discoveredDevices.length }} 台设备 / Found {{ discoveredDevices.length }} device(s)</h3>
+        <div
+          v-for="(dev, idx) in discoveredDevices"
+          :key="idx"
+          class="device-card"
+          :class="{ 'supports-offline': dev.supports_offline_reset, 'no-offline': !dev.supports_offline_reset }"
+        >
+          <div class="device-header">
+            <span class="device-badge" :class="dev.supports_offline_reset ? 'badge-success' : 'badge-warning'">
+              {{ dev.supports_offline_reset ? '✅ 支持离线重置' : '⚠️ 需官方渠道重置' }}
+            </span>
+          </div>
+          <table class="device-info-table">
+            <tr><td class="info-label">IP 地址</td><td>{{ dev.ip_address }}</td></tr>
+            <tr><td class="info-label">序列号</td><td><code>{{ dev.serial_number }}</code></td></tr>
+            <tr><td class="info-label">型号</td><td>{{ dev.device_description || '-' }}</td></tr>
+            <tr><td class="info-label">固件版本</td><td>{{ dev.software_version || '-' }}</td></tr>
+            <tr v-if="dev.boot_time"><td class="info-label">设备时间</td><td><strong>{{ dev.boot_time }}</strong></td></tr>
+            <tr v-if="dev.mac"><td class="info-label">MAC</td><td>{{ dev.mac }}</td></tr>
+          </table>
+          <p class="firmware-note">{{ dev.firmware_note }}</p>
+          <div class="device-actions">
+            <button
+              v-if="dev.supports_offline_reset"
+              class="btn btn-primary btn-sm"
+              @click="useDeviceForOfflineReset(dev)"
+            >
+              🔑 使用此设备信息生成离线密钥
+            </button>
+            <button class="btn btn-secondary btn-sm" @click="copyKey(dev.serial_number)">
+              📋 复制序列号
+            </button>
+          </div>
+          <!-- New firmware guidance (inline) -->
+          <div v-if="!dev.supports_offline_reset" class="new-firmware-guide">
+            <strong>新固件重置方法 / Reset Methods for New Firmware:</strong>
+            <ol>
+              <li><strong>微信扫码：</strong>在 SADP 中选择二维码方式 → 微信扫描 → 「海康威视客户服务」→ 密码重置</li>
+              <li><strong>导出设备文件：</strong>SADP 导出 → 发送给海康技术支持 → 收到 Encrypt.xml → SADP 导入</li>
+              <li><strong>电话：</strong>拨打 <strong>400-700-5998</strong></li>
+              <li><strong>Hik-Connect/萤石云：</strong>若设备已绑定，通过 APP「忘记密码」重置</li>
+            </ol>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="discoveryError" class="discovery-error">
+        ⚠️ {{ discoveryError }}
+      </div>
+    </div>
+
     <!-- Screen Capture Tab -->
     <div v-if="activeTab === 'capture'" class="tab-content card">
       <h2>🖥️ 屏幕截图 / Screen Capture</h2>
@@ -423,17 +509,43 @@ interface SADPFileResponse {
   error: string | null
 }
 
+interface DiscoveredDevice {
+  ip_address: string
+  serial_number: string
+  device_description: string
+  software_version: string
+  dsp_version: string
+  boot_time: string
+  mac: string
+  subnet_mask: string
+  gateway: string
+  http_port: string
+  command_port: string
+  dhcp: string
+  analog_channels: string
+  digital_channels: string
+  supports_offline_reset: boolean
+  firmware_note: string
+}
+
+interface SADPDiscoveryResponse {
+  devices: DiscoveredDevice[]
+  count: number
+  error: string | null
+}
+
 // In dev, Vite proxies /api to the backend. In prod, set VITE_API_BASE_URL to empty string or backend URL.
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
 
 const tabs = [
+  { id: 'discover', label: '🔍 设备发现' },
   { id: 'capture', label: '🖥️ 屏幕截图' },
   { id: 'qr', label: '📷 上传二维码' },
   { id: 'content', label: '📝 输入内容' },
   { id: 'sadp', label: '📋 设备文件' },
   { id: 'offline', label: '⚙️ 离线生成' },
 ]
-const activeTab = ref('capture')
+const activeTab = ref('discover')
 const isLoading = ref(false)
 const result = ref<KeyResponse | null>(null)
 const copied = ref(false)
@@ -459,6 +571,11 @@ const sadpFileInput = ref<HTMLInputElement | null>(null)
 const isSadpDragging = ref(false)
 const sadpResults = ref<KeyResponse[]>([])
 const sadpFileError = ref<string | null>(null)
+
+// Device discovery tab
+const discoveredDevices = ref<DiscoveredDevice[]>([])
+const isDiscovering = ref(false)
+const discoveryError = ref<string | null>(null)
 
 // Offline tab
 const offlineSerial = ref('')
@@ -650,6 +767,51 @@ onUnmounted(() => {
   if (capturePreviewUrl.value) URL.revokeObjectURL(capturePreviewUrl.value)
 })
 
+// ─── Device discovery ─────────────────────────────────────────────────────────
+
+async function discoverDevices() {
+  isDiscovering.value = true
+  discoveredDevices.value = []
+  discoveryError.value = null
+  result.value = null
+  try {
+    const response = await fetch(`${API_BASE}/api/sadp/discover?timeout=5`, {
+      method: 'POST',
+    })
+    if (!response.ok) {
+      const err = await response.json()
+      discoveryError.value = err.detail || '设备发现失败 / Discovery failed'
+      return
+    }
+    const data: SADPDiscoveryResponse = await response.json()
+    if (data.error) {
+      discoveryError.value = data.error
+    }
+    discoveredDevices.value = data.devices
+    if (data.devices.length === 0 && !data.error) {
+      discoveryError.value = '未发现设备。请确保与海康设备在同一局域网内，且 UDP 端口 37020 未被防火墙阻止。'
+        + ' / No devices found. Ensure you are on the same LAN and UDP port 37020 is not blocked.'
+    }
+  } catch (e) {
+    discoveryError.value = `网络错误: ${e}`
+  } finally {
+    isDiscovering.value = false
+  }
+}
+
+function useDeviceForOfflineReset(device: DiscoveredDevice) {
+  // 从启动时间中提取日期 / Extract date from boot time
+  offlineSerial.value = device.serial_number
+  if (device.boot_time) {
+    // boot_time format: "2016-03-06 09:18:17" → extract date part
+    const dateMatch = device.boot_time.match(/(\d{4})-(\d{2})-(\d{2})/)
+    if (dateMatch) {
+      offlineDate.value = `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}`
+    }
+  }
+  activeTab.value = 'offline'
+}
+
 // ─── SADP device file ─────────────────────────────────────────────────────────
 
 function triggerSadpFileInput() {
@@ -818,6 +980,7 @@ function methodLabel(method: string): string {
     url_fetch: '在线获取（通过服务器）',
     url_fetch_via_redirect: '在线获取（通过重定向）',
     sadp_file: 'SADP 设备文件',
+    sadp_discovery: 'SADP 局域网设备发现',
     raw: '原始内容',
   }
   return labels[method] || method
@@ -1383,5 +1546,133 @@ kbd {
 
 .firmware-warning li {
   margin-bottom: 4px;
+}
+
+/* ─── Device Discovery styles ─────────────────────────────────────────────── */
+
+.discovery-results {
+  margin-top: 20px;
+}
+
+.discovery-results h3 {
+  margin-bottom: 12px;
+  color: #333;
+}
+
+.device-card {
+  border: 2px solid #ddd;
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 16px;
+  background: #fafafa;
+  transition: border-color 0.2s;
+}
+
+.device-card.supports-offline {
+  border-color: #4caf50;
+  background: #f1f8e9;
+}
+
+.device-card.no-offline {
+  border-color: #ff9800;
+  background: #fff8e1;
+}
+
+.device-header {
+  margin-bottom: 12px;
+}
+
+.device-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 16px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.badge-success {
+  background: #c8e6c9;
+  color: #2e7d32;
+}
+
+.badge-warning {
+  background: #ffe0b2;
+  color: #e65100;
+}
+
+.device-info-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 12px;
+  font-size: 0.9rem;
+}
+
+.device-info-table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid #eee;
+}
+
+.device-info-table .info-label {
+  font-weight: 600;
+  color: #555;
+  width: 120px;
+  white-space: nowrap;
+}
+
+.device-info-table code {
+  background: #e8eaf6;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  word-break: break-all;
+}
+
+.firmware-note {
+  font-size: 0.82rem;
+  color: #666;
+  margin-bottom: 12px;
+  line-height: 1.5;
+}
+
+.device-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.btn-sm {
+  padding: 6px 14px !important;
+  font-size: 0.82rem !important;
+}
+
+.new-firmware-guide {
+  margin-top: 12px;
+  padding: 12px;
+  background: #fff3e0;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  color: #bf360c;
+  line-height: 1.6;
+}
+
+.new-firmware-guide ol {
+  margin: 6px 0 0 0;
+  padding-left: 20px;
+}
+
+.new-firmware-guide li {
+  margin-bottom: 4px;
+}
+
+.discovery-error {
+  margin-top: 16px;
+  padding: 12px 16px;
+  background: #fff3e0;
+  border: 2px solid #ff9800;
+  border-radius: 8px;
+  color: #e65100;
+  font-size: 0.9rem;
+  line-height: 1.5;
 }
 </style>

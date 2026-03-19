@@ -275,3 +275,70 @@ async def test_sadp_upload_empty_file(client):
         files={"file": ("empty.xml", b"", "text/xml")},
     )
     assert response.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# SADP device discovery tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sadp_discover_endpoint(client):
+    """Test SADP discovery endpoint returns valid response structure."""
+    from unittest.mock import AsyncMock, patch
+
+    from hikresetpasswd.sadp_discovery import DiscoveredDevice
+
+    mock_device = DiscoveredDevice(
+        ip_address="192.168.1.100",
+        serial_number="DS-2CD2432F-IW20150126CCCH502126167",
+        device_description="DS-2CD2432F-IW",
+        software_version="V5.2.5build 141201",
+        boot_time="2024-03-15 10:00:00",
+        mac="c0-56-e3-fe-42-92",
+        supports_offline_reset=True,
+        firmware_note="Firmware V5.2.5build 141201 supports offline key generation.",
+    )
+
+    with patch("hikresetpasswd.main.discover_devices", new_callable=AsyncMock) as mock_discover:
+        mock_discover.return_value = [mock_device]
+        response = await client.post("/api/sadp/discover?timeout=1")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["count"] == 1
+    assert len(data["devices"]) == 1
+    assert data["devices"][0]["serial_number"] == "DS-2CD2432F-IW20150126CCCH502126167"
+    assert data["devices"][0]["supports_offline_reset"] is True
+    assert data["devices"][0]["boot_time"] == "2024-03-15 10:00:00"
+    assert data["error"] is None
+
+
+@pytest.mark.asyncio
+async def test_sadp_discover_no_devices(client):
+    """Test SADP discovery when no devices found."""
+    from unittest.mock import AsyncMock, patch
+
+    with patch("hikresetpasswd.main.discover_devices", new_callable=AsyncMock) as mock_discover:
+        mock_discover.return_value = []
+        response = await client.post("/api/sadp/discover?timeout=1")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["count"] == 0
+    assert len(data["devices"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_sadp_discover_error_handling(client):
+    """Test SADP discovery handles errors gracefully."""
+    from unittest.mock import AsyncMock, patch
+
+    with patch("hikresetpasswd.main.discover_devices", new_callable=AsyncMock) as mock_discover:
+        mock_discover.side_effect = OSError("Network unavailable")
+        response = await client.post("/api/sadp/discover?timeout=1")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["error"] is not None
+    assert "Network unavailable" in data["error"]
