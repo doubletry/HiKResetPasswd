@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from hikresetpasswd.service import (
+    _extract_code_from_support_url,
     _extract_key_from_response,
     _find_redirect_urls,
     _is_allowed_domain,
@@ -364,3 +365,127 @@ class TestUrlRedirectFollowing:
             result = await process_qr_content(url)
             assert result.key == "REDIRECTKEY1"
             assert result.method == "url_redirect"
+
+
+class TestExtractCodeFromSupportUrl:
+    """Tests for _extract_code_from_support_url."""
+
+    def test_support_hikvision_online_url(self):
+        url = (
+            "https://support.hikvision.com/online?code="
+            "DS-2CD3525FV3-IT**AwAAAGITWSamRd5efeOUx71CmwDS-2CD3525FV3-IT20231211AACHAX8748597"
+        )
+        code = _extract_code_from_support_url(url)
+        assert code is not None
+        assert code.startswith("DS-2CD3525FV3-IT")
+        assert "AX8748597" in code
+
+    def test_non_support_hikvision_url(self):
+        url = "https://hikvision.com/products?id=123"
+        assert _extract_code_from_support_url(url) is None
+
+    def test_hikvision_url_without_code_param(self):
+        url = "https://support.hikvision.com/online"
+        assert _extract_code_from_support_url(url) is None
+
+    def test_non_online_path(self):
+        url = "https://support.hikvision.com/other?code=something"
+        assert _extract_code_from_support_url(url) is None
+
+    def test_non_hikvision_domain(self):
+        url = "https://evil.com/online?code=something"
+        assert _extract_code_from_support_url(url) is None
+
+    def test_subdomain_support_url(self):
+        """Subdomains like cn.support.hikvision.com should also work."""
+        url = "https://cn.support.hikvision.com/online?code=DS-XXXX-test"
+        code = _extract_code_from_support_url(url)
+        assert code == "DS-XXXX-test"
+
+
+class TestProcessSupportUrl:
+    """Tests for processing support.hikvision.com/online?code=... URLs."""
+
+    @pytest.mark.asyncio
+    async def test_support_url_extracts_code_and_generates_offline_key(self):
+        """A support URL with code should extract device data and generate offline key."""
+        url = (
+            "https://support.hikvision.com/online?code="
+            "DS-2CD3525FV3-IT**AwAAAGITWSamRd5efeOUx71Cmwzadcyi8zq9PJPvy5QeygzuT90E7"
+            "mIhmYKFTtsCGcf2EdhV4neExrlrZzGsilQkHjumBvzIq8aO4qEcC%2B7XlUSYAectiGgkFS0Y"
+            "8KG8F7CM%2BgG4vZTN%2BhLkJ/omgEVpvy7JSX8PAvAZRISaWNsYWwwmDS-2CD3525FV3-IT"
+            "20231211AACHAX8748597"
+        )
+        with patch(
+            "hikresetpasswd.service._try_hikvision_service_endpoints",
+            return_value=None,
+        ):
+            result = await process_qr_content(url)
+            # Should not return 403 error
+            assert result.error is None or "403" not in result.error
+            # Should extract serial and generate offline key
+            assert result.key is not None
+            assert result.method == "offline_v1"
+            # Should mention the serial in the error/info
+            assert "DS-2CD3525FV3-IT" in (result.error or "")
+
+    @pytest.mark.asyncio
+    async def test_support_url_does_not_fetch_url(self):
+        """support.hikvision.com URL should NOT be fetched via HTTP (avoids 403)."""
+        url = (
+            "https://support.hikvision.com/online?code="
+            "DS-2CD3525FV3-IT**TestData**DS-2CD3525FV3-IT20231211AACHAX1234567"
+        )
+        with patch(
+            "hikresetpasswd.service._try_hikvision_service_endpoints",
+            return_value=None,
+        ) as mock_service, patch(
+            "hikresetpasswd.service._fetch_with_waf_retry"
+        ) as mock_fetch:
+            result = await process_qr_content(url)
+            # _fetch_with_waf_retry should NOT have been called
+            mock_fetch.assert_not_called()
+            # _try_hikvision_service_endpoints SHOULD have been called with the code
+            assert mock_service.call_count >= 1
+            # Should still get a result (offline key)
+            assert result.key is not None
+
+    @pytest.mark.asyncio
+    async def test_support_url_tries_service_endpoints_first(self):
+        """Should try service endpoints with the code before falling back to offline."""
+        from hikresetpasswd.service import ResetKeyResult
+
+        url = (
+            "https://support.hikvision.com/online?code="
+            "DS-TEST**ChallengeData**DS-TEST20231211AACHAX9999999"
+        )
+        mock_result = ResetKeyResult(
+            key="SERVICE-KEY-123",
+            method="hikvision_service",
+        )
+        with patch(
+            "hikresetpasswd.service._try_hikvision_service_endpoints",
+            return_value=mock_result,
+        ):
+            result = await process_qr_content(url)
+            assert result.key == "SERVICE-KEY-123"
+            assert result.method == "hikvision_service"
+
+    @pytest.mark.asyncio
+    async def test_non_support_hikvision_url_still_fetched(self):
+        """Regular Hikvision URLs (not support/online) should still be fetched normally."""
+        url = "https://hikvision.com/reset?token=test123"
+        with patch("hikresetpasswd.service.httpx.AsyncClient") as mock_client_class:
+            mock_response = MagicMock()
+            mock_response.text = '{"key": "NORMALKEY"}'
+            mock_response.raise_for_status = MagicMock()
+            mock_response.url = url
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_class.return_value = mock_client
+
+            result = await process_qr_content(url)
+            assert result.key == "NORMALKEY"
+            assert result.method == "url_fetch"

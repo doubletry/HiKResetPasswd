@@ -27,7 +27,7 @@ import logging
 import re
 from datetime import date
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 
@@ -253,6 +253,13 @@ async def _process_url(url: str) -> ResetKeyResult:
     请求 QR 码中的 URL 并尝试提取重置密钥。
     Fetch a URL from the QR code and attempt to extract the reset key.
 
+    对于 support.hikvision.com/online?code=... 等已知的海康支持 URL，
+    直接提取 code 参数作为 SADP 设备数据进行处理，不再尝试直接访问 URL
+    （因为这些 URL 需要微信认证，直接访问会返回 403）。
+    For known Hikvision support URLs like support.hikvision.com/online?code=...,
+    the code parameter is extracted and processed as SADP device data directly,
+    instead of fetching the URL (which requires WeChat auth and returns 403).
+
     支持多步跳转：先请求初始 URL，如发现 JavaScript 跳转或二次 URL，继续追踪。
     Supports multi-step: fetch initial URL, follow JS redirects or secondary URLs.
 
@@ -282,6 +289,20 @@ async def _process_url(url: str) -> ResetKeyResult:
                 "Only Hikvision/WeChat service URLs from QR codes are supported."
             ),
         )
+
+    # 检查是否为海康支持 URL（如 support.hikvision.com/online?code=...）
+    # 这类 URL 需要微信认证，直接访问会 403，应提取 code 参数直接处理
+    # Check if this is a Hikvision support URL with code parameter.
+    # These URLs require WeChat auth (403 if fetched directly).
+    # Extract the code param and process it as SADP device data instead.
+    code_param = _extract_code_from_support_url(url)
+    if code_param:
+        logger.info(
+            "Detected Hikvision support URL with code parameter (%d chars), "
+            "processing code directly instead of fetching URL",
+            len(code_param),
+        )
+        return await _process_support_code(code_param, url)
 
     try:
         content, final_url = await _fetch_with_waf_retry(url)
@@ -340,6 +361,116 @@ async def _process_url(url: str) -> ResetKeyResult:
             method="url_fetch",
             error=f"Network error when fetching URL: {exc}",
         )
+
+
+def _extract_code_from_support_url(url: str) -> Optional[str]:
+    """
+    从海康支持 URL 中提取 code 参数。
+    Extract the 'code' parameter from a Hikvision support URL.
+
+    SADP 生成的二维码解码后是形如
+    https://support.hikvision.com/online?code=DS-2CD3525FV3-IT**AwAAA...
+    的 URL。code 参数包含设备序列号和加密挑战数据，是微信小程序提交给
+    海康后台 API 以获取安全码的核心内容。
+
+    The QR code from SADP decodes to a URL like
+    https://support.hikvision.com/online?code=DS-2CD3525FV3-IT**AwAAA...
+    The 'code' parameter contains the device serial and encrypted challenge
+    data, which is what the WeChat mini-program submits to the Hikvision API
+    to obtain the security code.
+
+    Returns:
+        code 参数值（如果是已知的支持 URL 格式），否则返回 None
+        The code parameter value if it's a known support URL, else None
+    """
+    parsed = urlparse(url)
+    hostname = parsed.hostname or ""
+    path = parsed.path or ""
+
+    # 匹配已知的海康支持 URL 模式 / Match known Hikvision support URL patterns
+    # - support.hikvision.com/online?code=...
+    # - *.hikvision.com/online?code=...
+    is_support_url = (
+        (hostname == "support.hikvision.com" or hostname.endswith(".hikvision.com"))
+        and "/online" in path
+    )
+    if not is_support_url:
+        return None
+
+    query_params = parse_qs(parsed.query)
+    code_values = query_params.get("code")
+    if code_values and code_values[0]:
+        return code_values[0]
+    return None
+
+
+async def _process_support_code(code: str, original_url: str) -> ResetKeyResult:
+    """
+    处理从海康支持 URL 中提取的 code 参数。
+    Process the 'code' parameter extracted from a Hikvision support URL.
+
+    code 参数包含设备序列号和加密挑战数据。处理流程：
+    The code contains device serial and encrypted challenge data. Processing:
+      1. 提取设备序列号 / Extract device serial number
+      2. 尝试提交至海康服务端点获取密钥 / Try submitting to Hikvision service endpoints
+      3. 尝试离线算法生成密钥 / Try offline algorithm
+    """
+    # 提取设备序列号（含完整序列号）
+    # Extract device serial (including full serial with date and unique ID)
+    # 完整序列号格式: DS-2CD3525FV3-IT20231211AACHAX8748597 (带日期和标识符)
+    # Full serial format: DS-2CD3525FV3-IT20231211AACHAX8748597 (with date and ID)
+    full_serial_match = re.search(
+        r'(DS-[A-Z0-9\-]+\d{8}[A-Z]{2,}[A-Z0-9]+)', code, re.IGNORECASE,
+    )
+    short_serial_match = re.search(r'(DS-[A-Z0-9\-]+)', code, re.IGNORECASE)
+
+    full_serial = full_serial_match.group(1) if full_serial_match else None
+    short_serial = short_serial_match.group(1) if short_serial_match else None
+
+    # 先尝试提交至海康服务端点 / First try Hikvision service endpoints
+    # 提交整个 code（而不是 URL）以模拟微信小程序的行为
+    # Submit the entire code (not the URL) to simulate WeChat mini-program behavior
+    service_result = await _try_hikvision_service_endpoints(code)
+    if service_result and service_result.key:
+        service_result.qr_content = original_url
+        return service_result
+
+    # 也尝试提交完整 URL / Also try submitting the full URL
+    service_result = await _try_hikvision_service_endpoints(original_url)
+    if service_result and service_result.key:
+        return service_result
+
+    # 尝试离线算法 / Try offline algorithm
+    serial = full_serial or short_serial
+    if serial:
+        today = date.today()
+        key = generate_key_v1(serial, today)
+        return ResetKeyResult(
+            key=key,
+            qr_content=original_url,
+            method="offline_v1",
+            error=(
+                f"Could not reach Hikvision cloud service. Generated offline key for "
+                f"serial {serial} with date {today}. "
+                "NOTE: This offline algorithm only works for older firmware (< 5.3.0). "
+                "For newer firmware, please use the '海康威视客户服务' WeChat public "
+                "account → 服务支持 → 密码重置 to scan the QR code and obtain the "
+                "security code, or contact Hikvision support at 400-700-5998."
+            ),
+        )
+
+    return ResetKeyResult(
+        qr_content=original_url,
+        method="support_code",
+        error=(
+            "Extracted device data from the Hikvision support URL but could not "
+            "obtain the reset key. The Hikvision cloud service was not reachable "
+            "and no serial number was found for offline generation. "
+            "Please use the '海康威视客户服务' WeChat public account "
+            "→ 服务支持 → 密码重置 to scan the SADP QR code, "
+            "or contact Hikvision support at 400-700-5998."
+        ),
+    )
 
 
 def _extract_key_from_response(content: str) -> Optional[str]:
